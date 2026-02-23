@@ -1,0 +1,2 @@
+// Components placed here are globally shared (Navbar, Footer, etc.)
+// Example: @/components/shared/Navbar.tsx
