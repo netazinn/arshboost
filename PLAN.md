@@ -6,7 +6,7 @@ Arshboost is a high-performance, SEO-optimized, and minimalist in-game boosting 
 
 MVP (Minimum Viable Product)
 
-Next.js 15 (PPR), Tailwind CSS, Shadcn UI, Supabase, Zustand, Iyzico (Payment infrastructure to be integrated last).
+Next.js 15 (PPR), Tailwind CSS, Shadcn UI, Supabase, Zustand, Stripe (Payment infrastructure to be integrated last).
 
 Performance (LCP < 1.2s), SEO (100 Score), Mobile-First UX.
 
@@ -27,29 +27,34 @@ Additional:
 [x] src/lib/stores/order-flow.ts — Zustand store with persist middleware for single-page order flow (Phase 10 prep).
 
 Phase 2: Database Schema & Logic
-[ ] Schema Design: - profiles: User roles (Admin, Booster, Client, Support).
+[x] Schema Design:
+    - supabase/migrations/20260223000001_core_schema.sql — profiles (roles), games, games_services, orders, chat_messages. Enums: user_role, service_type, order_status. Auto-triggers for handle_new_user + set_updated_at. Indexes on client_id, booster_id, status.
+    - supabase/migrations/20260223000002_rls_policies.sql — RLS enabled on all tables. Role-based policies: client (own), booster (job board + assigned), support (read-all + dispute write), admin (full).
+    - supabase/seed.sql — Development seed: League of Legends, Valorant, TFT with all service types.
 
-games_services: Games and associated services (Rank Boost, Win Boost, Duo Boost, Placement Matches, Unrated Matches).
+[x] Price Calculator: src/lib/price-calculator.ts — Server-side only. Handles rank_boost (per-tier multiplier), win_boost / placement_matches / unrated_matches (per-game rate), duo/priority/VPN/offline-mode surcharges. Strict types, no `any`. formatPrice() utility included.
 
-orders: Order status, pricing, and metadata.
+[x] SEO Infrastructure:
+    - src/lib/seo.ts — buildMetadata() helper for consistent Metadata objects across all pages.
+    - src/components/shared/JsonLd.tsx — JsonLd RSC + builders: buildWebSiteSchema, buildOrganizationSchema, buildServiceSchema, buildFaqSchema.
+    - layout.tsx — WebSite + Organization JSON-LD injected globally.
 
-[ ] Price Calculator: Dynamic price calculation functions (Server-side logic).
-
-[ ] SEO Infrastructure: Dynamic Metadata API and JSON-LD (Schema.org) structure.
+[x] Tests: src/lib/__tests__/price-calculator.test.ts — 16 Vitest tests (all pass). Covers all service types, all surcharges, stacking, edge cases, rounding.
 
 Phase 3: Core Features & UX
-[ ] Landing Page Section: High-conversion, SEO-compliant landing page entry. Generating UX/UI code strictly according to the provided design. Implementing the "single-page" experience allowing users to complete the entire order process without page refreshes.
+[x] Landing Page Section: High-conversion, SEO-compliant landing page at localhost:3000. Single-page experience with game cards as entry point to the order flow.
 
-[ ] Game Selection UI: Fluid and fast game/service selection interface.
+[x] Game Selection UI: Game cards on landing page serve as the selection UI. Single-page approach — clicking a card scrolls into the order configurator inline.
 
-[ ] Booking Step: Mobile-first form structure for gathering game information from the user.
+[x] Booking Step: Valorant-only launch. ValorantRankBoost order configurator: rank selection, RR input, queue/options, price calculator, checkout → Supabase order creation. Immortal RR title generation handled.
 
-[ ] Dashboards: - Client: Order tracking, live chat usage, ability to issue order commands (if a dispute is declared, support connects to view chat history; order cancellation, order completion) and access to live support.
-
-Booster: Viewing new jobs, ability to request jobs, chat within the client-support-booster chain, sending photos to live chat, and updating order status.
+[x] Dashboards (100% complete):
+    [x] Client: Order list, order detail, live chat, login persistence (saved to DB), 3-state booster matching UX, bulk delete, Mark Completed tooltip, E2E data sync fixed (force-dynamic + booster join).
+    [x] Booster: Job board, job detail + live chat, claim job, OrderActions (complete/dispute), sidebar rendering fixed ([object Object] bug resolved).
+    [x] Real-time: Supabase Realtime subscriptions wired. Chat messages stream live (INSERT events on chat_messages). Order status changes (booster claim, complete, dispute) auto-refresh the client page via UPDATE events on orders. Optimistic send for text messages — message appears instantly, server action fires in background.
 
 Phase 4: Payments & Real-time
-[ ] Iyzico Integration: Payment Intent and Webhook management.
+[ ] Stripe Integration: Payment Intent and Webhook management.
 
 [ ] Real-time Engine: Instant reflection of order status changes via Supabase Realtime.
 

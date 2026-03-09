@@ -92,3 +92,49 @@ Before providing code, the Agent must:
 ## 11. IYZICO PAYMENT INTEGRATION
 - **Server-Side Only:** All payment initializations and callbacks must be handled via Server Actions or Route Handlers. No sensitive data or API keys on the client-side.
 - **Secure Redirection:** Handle Iyzico's 3D secure flow and callback URLs strictly according to the official documentation, ensuring a graceful fallback for failed transactions.
+
+## 12. UI COMPONENT STYLE TOKENS (MANDATORY)
+
+All interactive elements (buttons, inputs, selects, textareas, modals, cards) **must** use the following dark-theme token system. This is non-negotiable and applies to every new component going forward.
+
+### Border
+| State | Class |
+| :--- | :--- |
+| Default | `border border-[#2a2a2a]` |
+| Hover | `hover:border-[#6e6d6f]` |
+| Focus | `focus:border-[#6e6d6f]` |
+| Disabled hover | `disabled:hover:border-[#2a2a2a]` |
+| Error | `border-red-500 focus:border-red-400 hover:border-red-400` |
+| Success | `border-green-600 focus:border-green-500 hover:border-green-500` |
+
+### Background
+| Element | Class |
+| :--- | :--- |
+| Buttons / Inputs / Selects | `bg-[#111111]` |
+| Card / Panel containers | `bg-[#111111]` |
+| Deeper inset inputs (chat, detail views) | `bg-[#0f0f0f]` |
+
+### Text
+| State | Class |
+| :--- | :--- |
+| Default label / placeholder | `text-[#a0a0a0]` |
+| Muted / secondary | `text-[#6e6d6f]` |
+| Active / focus | `text-white` |
+
+### Full button template
+```tsx
+<button className="flex h-[50px] items-center justify-center rounded-md border border-[#2a2a2a] bg-[#111111] font-mono text-xs tracking-[-0.1em] text-[#a0a0a0] transition-all duration-200 ease-in-out hover:border-[#6e6d6f] hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[#2a2a2a]">
+  Label
+</button>
+```
+
+### Full input template
+```tsx
+<input className="h-[50px] w-full rounded-md border border-[#2a2a2a] bg-[#111111] px-4 font-mono text-base tracking-[-0.1em] text-[#a0a0a0] placeholder:text-[#a0a0a0] transition-all duration-200 ease-in-out focus:border-[#6e6d6f] focus:text-white focus:outline-none" />
+```
+
+### ❌ FORBIDDEN (never use these for new components)
+- `border-[#6e6d6f]` as default border color
+- `hover:border-white` (solid white hover border)
+- `focus:border-white` (solid white focus border)
+- `bg-[#191919]` on interactive elements

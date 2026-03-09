@@ -2,12 +2,18 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import type { Database } from '@/types/database'
 
+const ROLE_HOME: Record<string, string> = {
+  booster: '/dashboard',
+  support: '/dashboard/support',
+  admin:   '/dashboard/support',
+}
+
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY!,
     {
       cookies: {
         getAll() {
@@ -27,7 +33,20 @@ export async function proxy(request: NextRequest) {
   )
 
   // Refresh session
-  await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  // Redirect non-client roles away from the public homepage
+  if (user && request.nextUrl.pathname === '/') {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+    const home = ROLE_HOME[profile?.role as string]
+    if (home) {
+      return NextResponse.redirect(new URL(home, request.url))
+    }
+  }
 
   return supabaseResponse
 }

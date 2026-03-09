@@ -1,11 +1,26 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Roboto, Roboto_Mono } from "next/font/google";
 import "./globals.css";
+import { JsonLd, buildWebSiteSchema, buildOrganizationSchema } from "@/components/shared/JsonLd";
+import { ThemeProvider } from "@/components/shared/ThemeProvider";
 
 const inter = Inter({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-inter",
+});
+
+const roboto = Roboto({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  display: "swap",
+  variable: "--font-roboto",
+});
+
+const robotoMono = Roboto_Mono({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-roboto-mono",
 });
 
 export const metadata: Metadata = {
@@ -39,9 +54,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body className="antialiased font-sans bg-background text-foreground">
-        {children}
+    <html lang="en" className={`${inter.variable} ${roboto.variable} ${robotoMono.variable}`} suppressHydrationWarning>
+      <body className="antialiased font-sans bg-background text-foreground" suppressHydrationWarning>
+        <JsonLd schema={buildWebSiteSchema()} />
+        <JsonLd schema={buildOrganizationSchema()} />
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );
