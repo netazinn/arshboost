@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import type { Transaction } from '@/types'
+import type { Transaction, Withdrawal } from '@/types'
 
 // ─── Client transactions ──────────────────────────────────────────────────────
 
@@ -26,4 +26,23 @@ export async function getClientTransactions(userId: string): Promise<Transaction
   }
 
   return (data ?? []) as Transaction[]
+}
+
+// ─── Booster withdrawals ──────────────────────────────────────────────────────
+
+export async function getWithdrawals(userId: string): Promise<Withdrawal[]> {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from('withdrawals')
+    .select('*')
+    .eq('booster_id', userId)
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    console.error('[getWithdrawals]', error.message)
+    return []
+  }
+
+  return (data ?? []) as Withdrawal[]
 }

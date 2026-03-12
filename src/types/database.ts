@@ -14,6 +14,57 @@ export type Database = {
   }
   public: {
     Tables: {
+      ban_requests: {
+        Row: {
+          id:           string
+          target_id:    string
+          requested_by: string
+          action:       'ban' | 'unban'
+          reason:       string | null
+          status:       'pending' | 'approved' | 'rejected'
+          resolved_by:  string | null
+          resolved_at:  string | null
+          created_at:   string
+        }
+        Insert: {
+          id?:          string
+          target_id:    string
+          requested_by: string
+          action:       'ban' | 'unban'
+          reason?:      string | null
+          status?:      'pending' | 'approved' | 'rejected'
+          resolved_by?: string | null
+          resolved_at?: string | null
+          created_at?:  string
+        }
+        Update: {
+          id?:          string
+          target_id?:   string
+          requested_by?: string
+          action?:      'ban' | 'unban'
+          reason?:      string | null
+          status?:      'pending' | 'approved' | 'rejected'
+          resolved_by?: string | null
+          resolved_at?: string | null
+          created_at?:  string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ban_requests_target_id_fkey"
+            columns: ["target_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ban_requests_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chat_messages: {
         Row: {
           content: string
@@ -181,6 +232,147 @@ export type Database = {
           },
         ]
       }
+      booster_verifications: {
+        Row: {
+          id: string
+          user_id: string
+          verification_status: string
+          first_name: string | null
+          last_name: string | null
+          dob: string | null
+          id_type: string | null
+          id_serial_number: string | null
+          id_document_url: string | null
+          id_selfie_url: string | null
+          proof_of_address_text: string | null
+          proof_of_address_url: string | null
+          discord_username: string | null
+          discord_unique_id: string | null
+          discord_avatar_url: string | null
+          admin_notes: string | null
+          reviewed_by: string | null
+          reviewed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          verification_status?: string
+          first_name?: string | null
+          last_name?: string | null
+          dob?: string | null
+          id_type?: string | null
+          id_serial_number?: string | null
+          id_document_url?: string | null
+          id_selfie_url?: string | null
+          proof_of_address_text?: string | null
+          proof_of_address_url?: string | null
+          discord_username?: string | null
+          discord_unique_id?: string | null
+          discord_avatar_url?: string | null
+          admin_notes?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          verification_status?: string
+          first_name?: string | null
+          last_name?: string | null
+          dob?: string | null
+          id_type?: string | null
+          id_serial_number?: string | null
+          id_document_url?: string | null
+          id_selfie_url?: string | null
+          proof_of_address_text?: string | null
+          proof_of_address_url?: string | null
+          discord_username?: string | null
+          discord_unique_id?: string | null
+          discord_avatar_url?: string | null
+          admin_notes?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booster_verifications_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booster_verifications_reviewed_by_fkey"
+            columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      transactions: {
+        Row: {
+          id:              string
+          user_id:         string
+          order_id:        string | null
+          payment_method:  'card' | 'paypal' | 'crypto' | 'balance' | 'other'
+          status:          'pending' | 'completed' | 'failed' | 'refunded'
+          amount:          number
+          currency:        string
+          promo_code:      string | null
+          discount_amount: number
+          created_at:      string
+          updated_at:      string
+        }
+        Insert: {
+          id?:              string
+          user_id:          string
+          order_id?:        string | null
+          payment_method?:  'card' | 'paypal' | 'crypto' | 'balance' | 'other'
+          status?:          'pending' | 'completed' | 'failed' | 'refunded'
+          amount:           number
+          currency?:        string
+          promo_code?:      string | null
+          discount_amount?: number
+          created_at?:      string
+          updated_at?:      string
+        }
+        Update: {
+          id?:              string
+          user_id?:         string
+          order_id?:        string | null
+          payment_method?:  'card' | 'paypal' | 'crypto' | 'balance' | 'other'
+          status?:          'pending' | 'completed' | 'failed' | 'refunded'
+          amount?:          number
+          currency?:        string
+          promo_code?:      string | null
+          discount_amount?: number
+          created_at?:      string
+          updated_at?:      string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transactions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       withdrawals: {
         Row: {
           id: string
@@ -242,10 +434,12 @@ export type Database = {
         Row: {
           booster_id: string | null
           client_id: string
+          completed_at: string | null
           created_at: string
           details: Json
           game_id: string
           id: string
+          net_payout: number | null
           price: number
           service_id: string
           status: Database["public"]["Enums"]["order_status"]
@@ -254,10 +448,12 @@ export type Database = {
         Insert: {
           booster_id?: string | null
           client_id: string
+          completed_at?: string | null
           created_at?: string
           details?: Json
           game_id: string
           id?: string
+          net_payout?: number | null
           price: number
           service_id: string
           status?: Database["public"]["Enums"]["order_status"]
@@ -266,10 +462,12 @@ export type Database = {
         Update: {
           booster_id?: string | null
           client_id?: string
+          completed_at?: string | null
           created_at?: string
           details?: Json
           game_id?: string
           id?: string
+          net_payout?: number | null
           price?: number
           service_id?: string
           status?: Database["public"]["Enums"]["order_status"]
@@ -309,6 +507,12 @@ export type Database = {
       profiles: {
         Row: {
           avatar_url: string | null
+          bank_details_status: string
+          bank_details_updated_at: string | null
+          bank_holder_name: string | null
+          bank_iban: string | null
+          bank_name: string | null
+          bank_swift: string | null
           created_at: string
           email: string
           id: string
@@ -318,6 +522,12 @@ export type Database = {
         }
         Insert: {
           avatar_url?: string | null
+          bank_details_status?: string
+          bank_details_updated_at?: string | null
+          bank_holder_name?: string | null
+          bank_iban?: string | null
+          bank_name?: string | null
+          bank_swift?: string | null
           created_at?: string
           email: string
           id: string
@@ -327,6 +537,12 @@ export type Database = {
         }
         Update: {
           avatar_url?: string | null
+          bank_details_status?: string
+          bank_details_updated_at?: string | null
+          bank_holder_name?: string | null
+          bank_iban?: string | null
+          bank_name?: string | null
+          bank_swift?: string | null
           created_at?: string
           email?: string
           id?: string
@@ -351,7 +567,10 @@ export type Database = {
         | "pending"
         | "awaiting_payment"
         | "in_progress"
+        | "waiting_action"
+        | "cancel_requested"
         | "completed"
+        | "approved"
         | "cancelled"
         | "dispute"
         | "support"
@@ -493,7 +712,10 @@ export const Constants = {
         "pending",
         "awaiting_payment",
         "in_progress",
+        "waiting_action",
+        "cancel_requested",
         "completed",
+        "approved",
         "cancelled",
         "dispute",
         "support",

@@ -1,8 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import {
   LayoutGrid,
   MessageSquare,
@@ -12,8 +11,8 @@ import {
   LogOut,
   ChevronDown,
   ShoppingCart,
+  Shield,
 } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import type { Profile } from '@/types'
 import { NotificationBell } from './NotificationBell'
 
@@ -22,10 +21,11 @@ interface UserMenuProps {
 }
 
 const ROLE_DASHBOARD: Record<string, string> = {
-  client:  '/dashboard/orders',
-  booster: '/dashboard',
-  support: '/dashboard/support',
-  admin:   '/dashboard/support',
+  client:     '/dashboard/orders',
+  booster:    '/dashboard',
+  support:    '/dashboard/orders',
+  admin:      '/dashboard/orders',
+  accountant: '/dashboard/orders',
 }
 
 const ROLE_CTA_ICON: Record<string, React.ReactNode> = {
@@ -53,9 +53,8 @@ const PRESENCE_COLOR: Record<Presence, string> = {
 export function UserMenu({ profile }: UserMenuProps) {
   const [isOpen, setIsOpen]          = useState(false)
   const [presence, setPresence]      = useState<Presence>('offline')
-  const [isPending, startTransition] = useTransition()
-  const containerRef                 = useRef<HTMLDivElement>(null)
-  const router                       = useRouter()
+  const [isPending, setIsPending] = useState(false)
+  const containerRef              = useRef<HTMLDivElement>(null)
 
   const dashHref   = ROLE_DASHBOARD[profile.role] ?? '/dashboard/orders'
   const ctaLabel   = ROLE_LABEL[profile.role]     ?? 'My Orders'
@@ -113,12 +112,8 @@ export function UserMenu({ profile }: UserMenuProps) {
 
   function handleLogout() {
     setIsOpen(false)
-    startTransition(async () => {
-      const supabase = createClient()
-      await supabase.auth.signOut()
-      router.push('/')
-      router.refresh()
-    })
+    setIsPending(true)
+    window.location.href = '/auth/signout'
   }
 
   const Avatar = ({ size }: { size: 'lg' | 'sm' }) => {
@@ -144,14 +139,16 @@ export function UserMenu({ profile }: UserMenuProps) {
 
   return (
     <div className="flex items-center gap-3">
-      {/* CTA button */}
-      <Link
-        href={dashHref}
-        className="flex h-[50px] min-w-[120px] items-center justify-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] font-mono text-xs tracking-[-0.1em] text-[#a0a0a0] transition-all duration-200 ease-in-out hover:border-[#6e6d6f] hover:text-white md:min-w-[160px]"
-      >
-        {ctaIcon}
-        {ctaLabel}
-      </Link>
+      {/* CTA button — hidden for admin */}
+      {profile.role !== 'admin' && (
+        <Link
+          href={dashHref}
+          className="flex h-[50px] min-w-[120px] items-center justify-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] font-mono text-xs tracking-[-0.1em] text-[#a0a0a0] transition-all duration-200 ease-in-out hover:border-[#6e6d6f] hover:text-white md:min-w-[160px]"
+        >
+          {ctaIcon}
+          {ctaLabel}
+        </Link>
+      )}
 
       {/* Notification bell */}
       <NotificationBell userId={profile.id} pushEnabled />
@@ -208,11 +205,17 @@ export function UserMenu({ profile }: UserMenuProps) {
 
             {/* Menu items */}
             <div className="py-1.5">
-              <MenuItem href={dashHref} icon={<LayoutGrid size={15} strokeWidth={1.5} />} label={ctaLabel} onClick={() => setIsOpen(false)} />
-              <MenuItem href="/dashboard/orders/chat" icon={<MessageSquare size={15} strokeWidth={1.5} />} label="Orders Chat" onClick={() => setIsOpen(false)} />
-              <MenuItem href="/dashboard/wallet" icon={<Wallet size={15} strokeWidth={1.5} />} label="Wallet" onClick={() => setIsOpen(false)} />
-              <MenuItem href="#" icon={<LifeBuoy size={15} strokeWidth={1.5} />} label="Support" onClick={() => setIsOpen(false)} />
-              <MenuItem href="/dashboard/settings" icon={<Settings size={15} strokeWidth={1.5} />} label="Settings" onClick={() => setIsOpen(false)} />
+              {profile.role === 'admin' ? (
+                <MenuItem href="/admin" icon={<Shield size={15} strokeWidth={1.5} />} label="Admin Panel" onClick={() => setIsOpen(false)} />
+              ) : (
+                <>
+                  <MenuItem href={dashHref} icon={<LayoutGrid size={15} strokeWidth={1.5} />} label={ctaLabel} onClick={() => setIsOpen(false)} />
+                  <MenuItem href="/dashboard/orders/chat" icon={<MessageSquare size={15} strokeWidth={1.5} />} label="Orders Chat" onClick={() => setIsOpen(false)} />
+                  <MenuItem href="/dashboard/wallet" icon={<Wallet size={15} strokeWidth={1.5} />} label="Wallet" onClick={() => setIsOpen(false)} />
+                  <MenuItem href="#" icon={<LifeBuoy size={15} strokeWidth={1.5} />} label="Support" onClick={() => setIsOpen(false)} />
+                  <MenuItem href="/dashboard/settings" icon={<Settings size={15} strokeWidth={1.5} />} label="Settings" onClick={() => setIsOpen(false)} />
+                </>
+              )}
             </div>
 
             {/* Divider + Logout */}

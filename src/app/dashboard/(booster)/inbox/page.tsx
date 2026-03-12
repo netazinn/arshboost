@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { MessageSquare } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
-import { fetchDmLastMessages } from '@/lib/actions/chat'
 import { getBoosterInboxOrders } from '@/lib/data/orders'
 import { ChatInboxLayout } from '@/components/features/dashboard/ChatInboxLayout'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
@@ -13,11 +12,8 @@ export default async function InboxPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  // Fetch in parallel: DM previews + visible order chats (30-day rule applied)
-  const [lastDmMessages, orders] = await Promise.all([
-    fetchDmLastMessages(user.id),
-    getBoosterInboxOrders(user.id),
-  ])
+  // Fetch active order chats (30-day rule applied)
+  const orders = await getBoosterInboxOrders(user.id)
 
   const currentUser: Pick<Profile, 'id' | 'role'> = { id: user.id, role: 'booster' }
 
@@ -27,13 +23,12 @@ export default async function InboxPage() {
         <DashboardPageHeader
           icon={MessageSquare}
           title="Chat Inbox"
-          subtitle="Staff channels and your active order conversations."
+          subtitle="Your active order conversations."
         />
         <ChatInboxLayout
           userId={user.id}
           role="booster"
           orders={orders}
-          lastDmMessages={lastDmMessages}
           currentUser={currentUser}
         />
       </main>

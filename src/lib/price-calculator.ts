@@ -44,11 +44,19 @@ const PER_GAME_RATE: Record<Extract<ServiceType, 'win_boost' | 'placement_matche
 
 /** Flat surcharges (in dollars) */
 const SURCHARGES = {
-  duo: 0.3,     // +30% of base
-  priority: 0.2, // +20% of base
+  duo: 0.3,     // +30% of base — overridable via SurchargeOverrides
+  priority: 0.2, // +20% of base — overridable via SurchargeOverrides
   vpn: 2.0,      // flat $2
   offlineMode: 1.5, // flat $1.50
 } as const
+
+/** Optional overrides for the dynamic surcharges (fetched from global_settings). */
+export interface SurchargeOverrides {
+  /** Fraction of subtotal added for duo boost, e.g. 0.30 = +30% */
+  duo?: number
+  /** Fraction of subtotal added for priority queue, e.g. 0.20 = +20% */
+  priority?: number
+}
 
 // ─── Calculator ───────────────────────────────────────────────────────────────
 
@@ -56,7 +64,7 @@ const SURCHARGES = {
  * Server-side price calculation. All inputs validated; returns an immutable breakdown.
  * Must NOT be called from client components — import only in Server Actions / Route Handlers.
  */
-export function calculatePrice(input: PriceInput): PriceBreakdown {
+export function calculatePrice(input: PriceInput, overrides?: SurchargeOverrides): PriceBreakdown {
   const {
     basePrice,
     serviceType,
@@ -86,10 +94,13 @@ export function calculatePrice(input: PriceInput): PriceBreakdown {
 
   const subtotal = basePrice + rankDeltaFee + gameCountFee
 
-  const duoPremium     = isDuo        ? subtotal * SURCHARGES.duo      : 0
-  const priorityFee    = isPriority   ? subtotal * SURCHARGES.priority  : 0
-  const vpnFee         = hasVpn       ? SURCHARGES.vpn                  : 0
-  const offlineModeFee = isOfflineMode ? SURCHARGES.offlineMode         : 0
+  const duoRate      = overrides?.duo      ?? SURCHARGES.duo
+  const priorityRate = overrides?.priority ?? SURCHARGES.priority
+
+  const duoPremium     = isDuo        ? subtotal * duoRate          : 0
+  const priorityFee    = isPriority   ? subtotal * priorityRate     : 0
+  const vpnFee         = hasVpn       ? SURCHARGES.vpn              : 0
+  const offlineModeFee = isOfflineMode ? SURCHARGES.offlineMode     : 0
 
   const total = round2(subtotal + duoPremium + priorityFee + vpnFee + offlineModeFee)
 

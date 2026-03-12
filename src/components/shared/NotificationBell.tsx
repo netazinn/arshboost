@@ -7,6 +7,7 @@ import {
   fetchNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  clearAllNotifications,
 } from '@/lib/actions/notifications'
 import type { AppNotification } from '@/lib/actions/notifications'
 
@@ -95,6 +96,11 @@ export function NotificationBell({ userId, pushEnabled = true }: NotificationBel
     markAllNotificationsRead().catch(console.error)
   }
 
+  function handleClearAll() {
+    setNotifications([])
+    clearAllNotifications().catch(console.error)
+  }
+
   if (!pushEnabled) return null
 
   return (
@@ -131,13 +137,23 @@ export function NotificationBell({ userId, pushEnabled = true }: NotificationBel
           {/* Header */}
           <div className="flex items-center justify-between border-b border-[#2a2a2a] px-4 py-3">
             <span className="font-sans text-sm font-semibold text-white">Notifications</span>
-            {unreadCount > 0 && (
-              <button
-                onClick={handleMarkAllRead}
-                className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
-              >
-                Mark all read
-              </button>
+            {notifications.length > 0 && (
+              <div className="flex items-center gap-3">
+                {unreadCount > 0 && (
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
+                  >
+                    Mark all read
+                  </button>
+                )}
+                <button
+                  onClick={handleClearAll}
+                  className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
+                >
+                  Clear all
+                </button>
+              </div>
             )}
           </div>
 

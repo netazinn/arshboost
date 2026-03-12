@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import { Wallet } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { getProfile } from '@/lib/data/profiles'
-import { getClientTransactions } from '@/lib/data/wallet'
+import { getClientTransactions, getWithdrawals } from '@/lib/data/wallet'
 import { getBoosterOrders } from '@/lib/data/orders'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
 import { WalletView } from '@/components/features/dashboard/WalletView'
@@ -25,8 +25,22 @@ export default async function WalletPage() {
   if (!profile) redirect('/auth/login')
 
   if (profile.role === 'booster') {
-    const orders = await getBoosterOrders(user.id)
-    return <BoosterWalletView orders={orders} />
+    const [orders, withdrawals] = await Promise.all([
+      getBoosterOrders(user.id),
+      getWithdrawals(user.id),
+    ])
+    return <BoosterWalletView
+      orders={orders}
+      withdrawals={withdrawals}
+      availableBalance={profile.balance ?? 0}
+      bankDetails={{
+        holder: profile.bank_holder_name ?? null,
+        bank:   profile.bank_name        ?? null,
+        swift:  profile.bank_swift       ?? null,
+        iban:   profile.bank_iban        ?? null,
+        status: (profile.bank_details_status ?? 'none') as 'none' | 'approved' | 'under_review',
+      }}
+    />
   }
 
   const transactions = await getClientTransactions(user.id)

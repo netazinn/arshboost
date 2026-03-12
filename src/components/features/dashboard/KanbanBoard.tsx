@@ -5,8 +5,9 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { GAME_ICONS } from '@/lib/config/game-icons'
-import { Search, ChevronDown, SlidersHorizontal } from 'lucide-react'
+import { Search, ChevronDown, SlidersHorizontal, Clock, AlertTriangle } from 'lucide-react'
 import type { Order, OrderStatus } from '@/types'
+import { calculateSLAStatus, type SLASettings, type SLAResult } from '@/lib/sla-utils'
 
 // ─── Column config ────────────────────────────────────────────────────────────
 
@@ -76,19 +77,67 @@ const STATUS_LABEL: Record<string, string> = {
   support:          'Support',
 }
 
+// ─── SLA indicator ───────────────────────────────────────────────────────────
+
+function SLAIndicator({ sla }: { sla: SLAResult }) {
+  if (sla.status === 'normal') return null
+
+  const isCritical = sla.status === 'critical'
+
+  return (
+    <div
+      title={sla.tooltip}
+      className={`mt-1.5 flex items-center gap-1.5 rounded px-1.5 py-1 ${
+        isCritical
+          ? 'bg-red-500/10 border border-red-500/20'
+          : 'bg-amber-500/10 border border-amber-500/20'
+      }`}
+    >
+      {isCritical ? (
+        <AlertTriangle
+          size={8}
+          strokeWidth={2.5}
+          className="text-red-400 animate-pulse shrink-0"
+        />
+      ) : (
+        <Clock
+          size={8}
+          strokeWidth={2.5}
+          className="text-amber-400 shrink-0"
+        />
+      )}
+      <span
+        className={`font-mono text-[9px] tracking-[-0.03em] ${
+          isCritical ? 'text-red-400' : 'text-amber-400'
+        }`}
+      >
+        {sla.label}
+      </span>
+    </div>
+  )
+}
+
 // ─── Order card ───────────────────────────────────────────────────────────────
 
-function OrderCard({ order }: { order: Order }) {
+function OrderCard({ order, slaSettings }: { order: Order; slaSettings: SLASettings }) {
+  const sla      = calculateSLAStatus(order, slaSettings)
   const gameIcon = GAME_ICONS[order.game?.name ?? '']
   const details  = (order.details ?? {}) as Record<string, string>
   const title    = details.current_rank && details.target_rank
     ? `${details.current_rank} → ${details.target_rank}`
     : order.service?.label ?? 'Order'
 
+  const borderCls =
+    sla.status === 'critical'
+      ? 'border-red-500/30 hover:border-red-500/50'
+      : sla.status === 'warning'
+        ? 'border-amber-500/25 hover:border-amber-500/45'
+        : 'border-[#1e1e1e] hover:border-[#3a3a3a]'
+
   return (
     <Link
-      href={`/dashboard/master-inbox?order=${order.id}`}
-      className="block rounded-lg border border-[#1e1e1e] bg-[#111111] p-3.5 hover:border-[#3a3a3a] hover:bg-[#151515] transition-all cursor-pointer"
+      href={`/admin/master-inbox?order=${order.id}`}
+      className={`block rounded-lg bg-[#111111] p-3.5 hover:bg-[#151515] transition-all cursor-pointer border ${borderCls}`}
     >
       {/* Top row: game icon + title + status */}
       <div className="flex items-start gap-2 mb-2.5">
@@ -135,6 +184,9 @@ function OrderCard({ order }: { order: Order }) {
           {new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
         </span>
       </div>
+
+      {/* SLA warning / critical indicator */}
+      <SLAIndicator sla={sla} />
     </Link>
   )
 }
@@ -201,7 +253,13 @@ function Select({
 
 // ─── Kanban Board ─────────────────────────────────────────────────────────────
 
-export function KanbanBoard({ initialOrders }: { initialOrders: Order[] }) {
+export function KanbanBoard({
+  initialOrders,
+  slaSettings,
+}: {
+  initialOrders: Order[]
+  slaSettings: SLASettings
+}) {
   const [orders, setOrders] = useState<Order[]>(initialOrders)
 
   // ── Filter / sort state ──
@@ -393,7 +451,7 @@ export function KanbanBoard({ initialOrders }: { initialOrders: Order[] }) {
                 </div>
               ) : (
                 colOrders.map((order) => (
-                  <OrderCard key={order.id} order={order} />
+                  <OrderCard key={order.id} order={order} slaSettings={slaSettings} />
                 ))
               )}
             </div>

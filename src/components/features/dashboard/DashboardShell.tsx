@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import {
   LayoutGrid,
   Briefcase,
@@ -15,7 +15,6 @@ import {
   Wallet,
   Settings,
 } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import type { Profile, UserRole } from '@/types'
 
 interface NavItem {
@@ -97,14 +96,10 @@ interface DashboardShellProps {
 export function DashboardShell({ profile, children }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const pathname = usePathname()
-  const router = useRouter()
   const navItems = NAV_ITEMS[profile.role] ?? NAV_ITEMS.client
 
-  async function handleLogout() {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push('/auth/login')
-    router.refresh()
+  function handleLogout() {
+    window.location.href = '/auth/signout'
   }
 
   const sidebar = (

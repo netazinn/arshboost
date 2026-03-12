@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { JobCard } from './_components/JobCard'
 import type { BoostDisplay } from './_components/JobCard'
 import type { Order } from '@/types'
+import { calculateBoosterPayout } from '@/lib/payout'
 
 export const dynamic = 'force-dynamic'
 
@@ -63,8 +64,10 @@ function orderToBoost(order: Order): BoostDisplay {
     options:      optionLabels,
     agents,
     wins:         typeof d.wins === 'number' ? d.wins : undefined,
-    payout:       order.price,
+    payout:       calculateBoosterPayout(order.price).boosterPayout,
     postedAt:     formatTimeAgo(order.created_at),
+    isTakeover:   order.is_takeover ?? false,
+    takeoverNote: order.takeover_note ?? null,
   }
 }
 

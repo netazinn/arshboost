@@ -31,6 +31,8 @@ export interface BoostDisplay {
   wins?:        number
   payout:       number
   postedAt:     string
+  isTakeover?:  boolean
+  takeoverNote?: string | null
 }
 
 // ── Rank image map ────────────────────────────────────────────────────────────
@@ -240,6 +242,13 @@ export function JobCard({ boost }: { boost: BoostDisplay }) {
   return (
     <div className="flex w-full min-h-[220px] flex-col justify-between overflow-hidden rounded-md border-2 border-white/5 bg-[#0B0B0B] font-mono shadow-[0px_1px_2px_rgba(0,0,0,0.3),0px_2px_6px_2px_rgba(0,0,0,0.15)]">
 
+      {/* Takeover banner */}
+      {boost.isTakeover && (
+        <div className="flex items-center gap-2 border-b border-orange-500/20 bg-orange-500/10 px-5 py-2">
+          <span className="font-mono text-[10px] font-bold tracking-[-0.02em] text-orange-400">↺ TAKEOVER ORDER</span>
+        </div>
+      )}
+
       {/* Body */}
       <div>
         {/* Header */}
@@ -276,6 +285,14 @@ export function JobCard({ boost }: { boost: BoostDisplay }) {
 
         {/* Data grid */}
         <OptionsGrid boost={boost} />
+
+        {/* Takeover note */}
+        {boost.isTakeover && boost.takeoverNote && (
+          <div className="mx-5 mb-4 rounded border border-amber-500/25 bg-amber-500/8 px-3 py-2">
+            <p className="font-mono text-[9px] font-semibold tracking-[0.02em] uppercase text-amber-400 mb-0.5">Admin Note</p>
+            <p className="font-mono text-[10px] tracking-[-0.04em] text-amber-200 leading-relaxed">{boost.takeoverNote}</p>
+          </div>
+        )}
       </div>
 
       {/* Footer */}
@@ -289,7 +306,7 @@ export function JobCard({ boost }: { boost: BoostDisplay }) {
               USD
             </span>
           </div>
-          <span className="font-mono text-[10px] text-[#4a4a4a]">{boost.postedAt}</span>
+          <span className="font-mono text-[10px] text-[#4a4a4a]">YOUR EARNINGS · {boost.postedAt}</span>
         </div>
         <ClaimButton orderId={boost.id} />
       </div>

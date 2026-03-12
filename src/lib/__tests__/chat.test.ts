@@ -54,18 +54,20 @@ import type { Order } from '@/types'
 
 function makeOrder(overrides: Partial<Order> & { id?: string } = {}): Order {
   return {
-    id:         overrides.id         ?? 'aaaabbbb-cccc-dddd-eeee-000000000001',
-    client_id:  'client-1',
-    booster_id: null,
-    game_id:    'game-1',
-    service_id: 'svc-1',
-    status:     overrides.status     ?? 'in_progress',
-    price:      overrides.price      ?? 49.99,
-    details:    overrides.details    ?? { current_rank: 'Iron 1', target_rank: 'Silver 2' },
-    created_at: overrides.created_at ?? '2026-01-15T10:00:00.000Z',
-    updated_at: '2026-01-15T10:00:00.000Z',
-    game:       overrides.game       ?? { id: 'game-1', name: 'Valorant', slug: 'valorant', logo_url: '/v.png', is_active: true },
-    service:    overrides.service    ?? { id: 'svc-1', game_id: 'game-1', type: 'rank_boost', label: 'Rank Boost', base_price: 10, is_active: true },
+    id:           overrides.id           ?? 'aaaabbbb-cccc-dddd-eeee-000000000001',
+    client_id:    'client-1',
+    booster_id:   null,
+    game_id:      'game-1',
+    service_id:   'svc-1',
+    status:       overrides.status       ?? 'in_progress',
+    price:        overrides.price        ?? 49.99,
+    net_payout:   overrides.net_payout   ?? null,
+    completed_at: overrides.completed_at ?? null,
+    details:      overrides.details      ?? { current_rank: 'Iron 1', target_rank: 'Silver 2' },
+    created_at:   overrides.created_at   ?? '2026-01-15T10:00:00.000Z',
+    updated_at:   '2026-01-15T10:00:00.000Z',
+    game:         overrides.game         ?? { id: 'game-1', name: 'Valorant', slug: 'valorant', logo_url: '/v.png', is_active: true },
+    service:      overrides.service      ?? { id: 'svc-1', game_id: 'game-1', type: 'rank_boost', label: 'Rank Boost', base_price: 10, is_active: true },
     ...overrides,
   }
 }

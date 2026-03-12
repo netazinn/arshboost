@@ -3,13 +3,15 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { isDisposableEmail } from '@/lib/utils/anomaly-detection'
 
 // ─── Role → dashboard mapping ────────────────────────────────────────────────
 
 const ROLE_HOME: Record<string, string> = {
   booster: '/dashboard',
-  support: '/dashboard/master-inbox',
-  admin:   '/dashboard/radar',
+  support: '/admin',
+  admin:   '/admin',
+  accountant: '/admin/withdrawals',
   client:  '/',
 }
 
@@ -128,6 +130,12 @@ export async function registerAction(
     return { error: 'Password must be at least 8 characters.', success: false }
   }
 
+  // ── Disposable email check ─────────────────────────────────────────────────
+  const burner = await isDisposableEmail(email)
+  if (burner) {
+    return { error: 'Please use a valid, permanent email address to register.', success: false }
+  }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase.auth.signUp({
@@ -166,5 +174,6 @@ export async function logoutAction(): Promise<void> {
   const supabase = await createClient()
   await supabase.auth.signOut()
   revalidatePath('/', 'layout')
-  redirect('/')
+  // Do NOT call redirect() here — the client performs a hard navigation
+  // (window.location.href) so the Next.js router cache is fully wiped.
 }

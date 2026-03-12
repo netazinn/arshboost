@@ -7,6 +7,9 @@ import type { OrderStatus, ServiceType } from '@/types'
 import type { Json } from '@/types/database'
 import { createNotificationsForAction } from './notifications'
 import { sendNotificationEmail } from '@/lib/email'
+import { calculateBoosterPayout } from '@/lib/payout'
+import { checkPaymentVelocity } from '@/lib/utils/anomaly-detection'
+import { flagUser } from '@/lib/actions/flags'
 
 // ─── Slug → DB service-type map ───────────────────────────────────────────────
 
@@ -51,30 +54,75 @@ export async function createOrderAction(params: {
 
   if (!service) return { error: `Service "${serviceType}" not found. Run the seed script first.` }
 
-  // Insert the order with in_progress status (payment bypassed)
+  // ── Payment velocity check (uses service role to bypass RLS) ─────────────
+  const svcForVelocity = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+
+  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
+  const [{ count: failedCount }, { data: pastOrders }] = await Promise.all([
+    svcForVelocity
+      .from('payment_attempts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('status', 'failed')
+      .gte('created_at', since24h),
+    svcForVelocity
+      .from('orders')
+      .select('price')
+      .eq('client_id', user.id)
+      .neq('status', 'cancelled'),
+  ])
+
+  const avgOrderValue =
+    pastOrders && pastOrders.length > 0
+      ? pastOrders.reduce((sum: number, o: { price: number }) => sum + (o.price ?? 0), 0) / pastOrders.length
+      : 0
+
+  const velocityResult = checkPaymentVelocity(
+    failedCount ?? 0,
+    params.price,
+    avgOrderValue,
+  )
+
+  const needsManualReview = velocityResult.blocked
+
+  if (needsManualReview) {
+    // Fire-and-forget flag — never blocks the order creation
+    flagUser(user.id, 'PAYMENT_VELOCITY', velocityResult.reason ?? undefined).catch(() => {})
+  }
+
+  // Insert the order (manual_review flag set when velocity check triggered)
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
-      client_id:  user.id,
-      booster_id: null,
-      game_id:    game.id,
-      service_id: service.id,
-      status:     'in_progress' as OrderStatus,
-      price:      params.price,
-      details:    params.details as unknown as Json,
+      client_id:     user.id,
+      booster_id:    null,
+      game_id:       game.id,
+      service_id:    service.id,
+      status:        'in_progress' as OrderStatus,
+      price:         params.price,
+      details:       params.details as unknown as Json,
+      manual_review: needsManualReview,
     })
     .select('id')
     .single()
 
   if (error) return { error: error.message }
 
+  // Log this order as a successful payment attempt for future velocity checks
+  svcForVelocity
+    .from('payment_attempts')
+    .insert({ user_id: user.id, amount: params.price, status: 'success' })
+    .then(({ error: e }) => { if (e) console.error('[PaymentVelocity] log error:', e.message) })
+
   // Notify + email the client about their new order (fire-and-forget)
   const shortId = order.id.slice(0, 8).toUpperCase()
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://arshboost.com'
-  const admin = createServiceClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  )
+  // Re-use the service-role client already created above
+  const admin = svcForVelocity
 
   // ── In-App: Client receipt notification
   const clientNotifBody = `Your order #${shortId} has been placed and is awaiting a booster. We will notify you as soon as one is assigned.`
@@ -197,6 +245,7 @@ export async function executeOrderAction(
   orderId: string,
   actionType: OrderActionType,
   actorRole: 'Client' | 'Booster',
+  proofImageUrl?: string | null,
 ): Promise<{ error?: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -210,36 +259,34 @@ export async function executeOrderAction(
 
   const trackId = Math.random().toString(36).slice(2, 8).toUpperCase()
 
-  // Map action → new order status
-  const statusMap: Record<OrderActionType, OrderStatus> = {
+  // Map action → new order status (null = no status change)
+  const statusMap: Record<OrderActionType, OrderStatus | null> = {
     mark_completed:        'completed',
-    booster_mark_complete: 'completed',
+    booster_mark_complete: 'waiting_action',
     open_dispute:          'dispute',
-    need_support:          'support',
-    cancel_request:        'cancelled',
+    need_support:          null,            // status stays in_progress; only support_needed flips
+    cancel_request:        'cancel_requested',
   }
 
-  // Message stored in DB — receiver reads it as-is.
-  // For 'completed', the sender sees an override in dbToLocal (sender_id check).
   const messageMap: Record<OrderActionType, { content: string; systemType: string }> = {
     mark_completed: {
       content:    `The order has been marked as completed by the ${actorRole}. Please ensure your order has been completed successfully and flawlessly. Otherwise, you can call support or open a dispute.`,
       systemType: 'completed',
     },
     booster_mark_complete: {
-      content:    `The order has been marked as completed by the ${actorRole}. Please ensure your order has been completed successfully and flawlessly. Otherwise, you can call support or open a dispute.`,
-      systemType: 'completed',
+      content:    `The booster has marked this order as complete. Please review and click "Approve & Release Funds" if everything looks good, or open a dispute if something is wrong.`,
+      systemType: 'waiting_action',
     },
     open_dispute: {
-      content:    `A dispute case has been opened for this order by the ${actorRole}. Dispute ID: DSP-${trackId} — Please wait for support to connect and intervene before sending any further messages.`,
+      content:    `A dispute has been opened by the ${actorRole}. The chat is now locked pending support intervention. Dispute ID: DSP-${trackId}`,
       systemType: 'dispute',
     },
     need_support: {
-      content:    `A support case has been opened for this order by the ${actorRole}. Support ID: SUP-${trackId} — Please wait for support to connect and intervene before sending any further messages.`,
+      content:    `Support has been notified for this order by the ${actorRole}. A team member will join the chat shortly. Support ID: SUP-${trackId}`,
       systemType: 'support',
     },
     cancel_request: {
-      content:    `A cancel request has been opened for this order by the ${actorRole}. Cancel ID: CAN-${trackId} — Please wait for support to connect and intervene before sending any further messages.`,
+      content:    `A cancellation has been requested by the ${actorRole}. The chat is now locked pending review. Cancel ID: CAN-${trackId}`,
       systemType: 'cancel',
     },
   }
@@ -253,6 +300,22 @@ export async function executeOrderAction(
     .select('client_id, booster_id, id')
     .eq('id', orderId)
     .single()
+
+  if (!orderRow) return { error: 'Order not found' }
+
+  // ── Ownership check (service role bypasses RLS, so we enforce here) ─────────
+  // Booster-only actions must be called by the assigned booster.
+  // Client-only actions must be called by the order's client.
+  if (actionType === 'booster_mark_complete') {
+    if (orderRow.booster_id !== user.id) return { error: 'Forbidden: you are not the assigned booster' }
+  } else if (actionType === 'mark_completed') {
+    if (orderRow.client_id !== user.id) return { error: 'Forbidden: you are not the client for this order' }
+  } else {
+    // open_dispute, need_support, cancel_request — either participant may call
+    if (orderRow.client_id !== user.id && orderRow.booster_id !== user.id) {
+      return { error: 'Forbidden: you are not a participant in this order' }
+    }
+  }
 
   // Fetch both profiles in parallel
   const participantIds = [
@@ -321,12 +384,25 @@ export async function executeOrderAction(
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://arshboost.com'
   const orderUrl = `${siteUrl}/dashboard/orders/${orderId}`
 
-  // 1. Update order status
-  const { error: statusErr } = await admin
-    .from('orders')
-    .update({ status: newStatus })
-    .eq('id', orderId)
-  if (statusErr) return { error: statusErr.message }
+  // 1. Update order status (or support_needed flag for need_support)
+  if (newStatus !== null) {
+    const updatePayload: Record<string, unknown> = { status: newStatus }
+    if (actionType === 'booster_mark_complete' && proofImageUrl) {
+      updatePayload.proof_image_url = proofImageUrl
+    }
+    const { error: statusErr } = await admin
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', orderId)
+    if (statusErr) return { error: statusErr.message }
+  } else {
+    // need_support: flip flag only, keep current status
+    const { error: flagErr } = await admin
+      .from('orders')
+      .update({ support_needed: true })
+      .eq('id', orderId)
+    if (flagErr) return { error: flagErr.message }
+  }
 
   // 2. Insert system message — sender_id = auth user so dbToLocal can detect "by you"
   const { error: msgErr } = await admin
@@ -376,6 +452,106 @@ export async function executeOrderAction(
   revalidatePath('/dashboard/boosts')
   revalidatePath('/dashboard/support')
   return {}
+}
+
+export async function approveAndReleaseAction(orderId: string): Promise<{ error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+
+  // Verify caller is the client for this order
+  const { data: order } = await admin
+    .from('orders')
+    .select('client_id, booster_id, status, price')
+    .eq('id', orderId)
+    .single()
+  if (!order) return { error: 'Order not found' }
+  if (order.client_id !== user.id) return { error: 'Forbidden' }
+  if (order.status !== 'waiting_action') return { error: 'Order is not pending approval' }
+
+  const { error: statusErr } = await admin
+    .from('orders')
+    .update({ status: 'completed' as OrderStatus })
+    .eq('id', orderId)
+  if (statusErr) return { error: statusErr.message }
+
+  // Credit booster's balance atomically via a single UPDATE expression
+  if (order.booster_id) {
+    const { boosterPayout } = calculateBoosterPayout(order.price as number)
+    await admin.rpc('increment_profile_balance', {
+      p_user_id: order.booster_id,
+      p_amount:  boosterPayout,
+    })
+  }
+
+  await admin.from('chat_messages').insert({
+    order_id:    orderId,
+    sender_id:   user.id,
+    content:     'The client has approved and released funds. This order is now complete. Thank you!',
+    is_system:   true,
+    system_type: 'completed',
+  })
+
+  revalidatePath(`/dashboard/orders/${orderId}`)
+  revalidatePath(`/dashboard/boosts/${orderId}`)
+  revalidatePath('/dashboard/orders')
+  revalidatePath('/dashboard/boosts')
+  return {}
+}
+
+// ─── Booster: upload proof screenshot then mark complete ─────────────────────
+// Accepts FormData so the file is streamed through the server action (no storage
+// RLS needed — the service role client does the upload).
+export async function boosterMarkCompleteWithProof(
+  formData: FormData,
+): Promise<{ error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const orderId = formData.get('orderId')
+  const file    = formData.get('file')
+  if (typeof orderId !== 'string' || !orderId) return { error: 'Missing orderId' }
+  if (!(file instanceof File))                  return { error: 'Missing file' }
+  if (!file.type.startsWith('image/'))          return { error: 'Only image files are accepted' }
+  if (file.size > 10 * 1024 * 1024)            return { error: 'File must be under 10 MB' }
+
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+
+  // Ownership check before uploading (avoid orphaned files)
+  const { data: orderRow } = await admin
+    .from('orders')
+    .select('booster_id, status')
+    .eq('id', orderId)
+    .single()
+  if (!orderRow)                        return { error: 'Order not found' }
+  if (orderRow.booster_id !== user.id)  return { error: 'Forbidden: you are not the assigned booster' }
+  if (orderRow.status !== 'in_progress') return { error: 'Order is not in progress' }
+
+  // Upload via service role — no storage RLS required
+  const safeExt = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(
+    (file.name.split('.').pop() ?? '').toLowerCase(),
+  ) ? file.name.split('.').pop()!.toLowerCase() : 'jpg'
+  const path = `${orderId}/${Date.now()}.${safeExt}`
+  const buf  = Buffer.from(await file.arrayBuffer())
+
+  const { error: uploadErr } = await admin.storage
+    .from('order-proofs')
+    .upload(path, buf, { contentType: file.type, upsert: true })
+  if (uploadErr) return { error: uploadErr.message }
+
+  const { data: { publicUrl } } = admin.storage.from('order-proofs').getPublicUrl(path)
+
+  // Delegate to the main state machine (ownership re-checked there, notifications sent)
+  return executeOrderAction(orderId, 'booster_mark_complete', 'Booster', publicUrl)
 }
 
 // ─── Save login credentials to order details ─────────────────────────────────
@@ -560,6 +736,7 @@ export async function deleteOrdersAction(ids: string[]): Promise<{ error: string
 // publication is not yet configured on the Supabase project.
 export async function fetchOrderStatus(orderId: string): Promise<{
   status: string
+  support_needed: boolean
   booster_id: string | null
   updated_at: string
   details: Record<string, unknown> | null
@@ -568,7 +745,7 @@ export async function fetchOrderStatus(orderId: string): Promise<{
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('orders')
-    .select('status, booster_id, updated_at, details, booster:profiles!orders_booster_id_fkey(id, username, email, avatar_url)')
+    .select('status, support_needed, booster_id, updated_at, details, booster:profiles!orders_booster_id_fkey(id, username, email, avatar_url)')
     .eq('id', orderId)
     .single()
   if (error) return null

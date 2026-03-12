@@ -1,18 +1,19 @@
 'use client'
 
 import { useRef, useEffect, useState, useTransition } from 'react'
-import { SendHorizonal, ImagePlus, Loader2, Check, CheckCheck } from 'lucide-react'
-import { sendMessage, fetchMessages } from '@/lib/actions/chat'
+import { SendHorizonal, ImagePlus, Loader2, Check, CheckCheck, Shield } from 'lucide-react'
+import { sendMessage, fetchMessages, getSenderProfile } from '@/lib/actions/chat'
 import { createClient } from '@/lib/supabase/client'
 import type { ChatMessage, Profile } from '@/types'
 
 // ─── Shared system-message primitives (also used by OrderDetailView) ───────────
 export const SYS_COLOR_MAP: Record<string, string> = {
-  completed:   'text-green-400',
-  dispute:     'text-orange-400',
-  support:     'text-blue-400',
-  cancel:      'text-red-400',
-  rank_update: 'text-purple-400',
+  completed:      'text-green-400',
+  dispute:        'text-orange-400',
+  support:        'text-blue-400',
+  cancel:         'text-red-400',
+  rank_update:    'text-purple-400',
+  waiting_action: 'text-yellow-400',
 }
 
 export function SystemMessageDivider({ text, colorCls }: { text: string; colorCls?: string }) {
@@ -64,11 +65,20 @@ export function ChatPanel({
     const supabase = createClient()
     console.log(`[ChatPanel][Realtime] Subscribing to chat_messages for order ${orderId}`)
 
-    const applyMsg = (newMsg: ChatMessage) => {
+    const applyMsg = async (newMsg: ChatMessage) => {
       if (newMsg.sender_id === currentUser.id) return // own message already shown optimistically
+      // Fetch sender profile via server action (bypasses profiles RLS) so admin/support
+      // role styling works correctly in booster/client views.
+      let msgWithSender = newMsg
+      if (!newMsg.sender?.role) {
+        const senderProfile = await getSenderProfile(newMsg.sender_id)
+        if (senderProfile) {
+          msgWithSender = { ...newMsg, sender: senderProfile as ChatMessage['sender'] }
+        }
+      }
       setMessages((prev) => {
-        if (prev.some((m) => m.id === newMsg.id)) return prev
-        return [...prev, newMsg]
+        if (prev.some((m) => m.id === msgWithSender.id)) return prev
+        return [...prev, msgWithSender]
       })
     }
 
@@ -178,6 +188,12 @@ export function ChatPanel({
         ) : (
           messages.map((msg) => {
             const isOwn = msg.sender_id === currentUser.id
+            const senderRole = msg.sender?.role ?? ''
+            const isStaffSender = ['admin', 'support', 'accountant'].includes(senderRole)
+            const staffLabel = senderRole === 'admin' ? '[SYSTEM ADMINISTRATOR]'
+              : senderRole === 'support' ? '[SUPPORT]'
+              : senderRole === 'accountant' ? '[ACCOUNTANT]'
+              : null
 
             // ── System message: centred divider ───────────────────
             if (msg.is_system) {
@@ -185,21 +201,26 @@ export function ChatPanel({
               return <SystemMessageDivider key={msg.id} text={msg.content} colorCls={colorCls} />
             }
 
-            // Resolve sender label
+            // Resolve sender label — staff override takes priority over generic party label
             const otherPartyLabel = currentUser.role === 'booster' ? 'Client' : 'Booster'
+            const displayName = msg.sender?.username ?? msg.sender?.email ?? otherPartyLabel
             const senderName = isOwn
-              ? 'You'
-              : (msg.sender?.username ?? msg.sender?.email ?? otherPartyLabel)
+              ? (staffLabel ? `${staffLabel} You` : 'You')
+              : (staffLabel ? `${staffLabel} ${displayName}` : displayName)
 
             return (
               <div
                 key={msg.id}
                 className={`flex flex-col gap-1 ${isOwn ? 'items-end' : 'items-start'}`}
               >
-                {/* Sender label — only above incoming messages */}
+                {/* Sender label */}
                 <div className="flex items-center gap-2">
-                  {!isOwn && (
-                    <span className="font-mono text-[10px] tracking-[-0.05em] text-[#6e6d6f]">
+                  {(!isOwn || (isOwn && isStaffSender)) && (
+                    <span className={`font-mono text-[10px] tracking-[-0.05em] ${
+                      isStaffSender
+                        ? senderRole === 'admin' ? 'text-red-400 font-semibold' : 'text-yellow-400 font-semibold'
+                        : 'text-[#6e6d6f]'
+                    }`}>
                       {senderName}
                     </span>
                   )}
@@ -219,11 +240,31 @@ export function ChatPanel({
                 ) : (
                   <div
                     className={`max-w-[320px] rounded-md px-3 py-2 font-mono text-xs tracking-[-0.05em] leading-relaxed ${
-                      isOwn
-                        ? 'bg-white text-black'
-                        : 'bg-[#2a2a2a] text-white'
+                      isStaffSender
+                        ? senderRole === 'admin'
+                          ? isOwn
+                            ? 'bg-red-500/10 border border-red-500/40 text-red-100 shadow-[0_0_12px_rgba(239,68,68,0.15)] rounded-br-none'
+                            : 'bg-red-500/5 border border-red-500/30 text-red-200 shadow-[0_0_8px_rgba(239,68,68,0.1)] rounded-bl-none'
+                          : isOwn
+                            ? 'bg-yellow-500/10 border border-yellow-500/40 text-yellow-100 shadow-[0_0_12px_rgba(234,179,8,0.15)] rounded-br-none'
+                            : 'bg-yellow-500/5 border border-yellow-500/30 text-yellow-200 shadow-[0_0_8px_rgba(234,179,8,0.1)] rounded-bl-none'
+                        : isOwn
+                          ? 'bg-white text-black'
+                          : 'bg-[#2a2a2a] text-white'
                     }`}
                   >
+                    {isStaffSender && (
+                      <div className={`flex items-center gap-1 mb-1 ${
+                        isOwn ? 'justify-end' : 'justify-start'
+                      }`}>
+                        <Shield size={9} strokeWidth={2} className={senderRole === 'admin' ? 'text-red-400' : 'text-yellow-400'} />
+                        <span className={`font-mono text-[8px] tracking-[0.02em] font-semibold uppercase ${
+                          senderRole === 'admin' ? 'text-red-400' : 'text-yellow-400'
+                        }`}>
+                          {senderRole}
+                        </span>
+                      </div>
+                    )}
                     {msg.content}
                   </div>
                 )}

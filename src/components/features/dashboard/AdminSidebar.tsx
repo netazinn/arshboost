@@ -1,24 +1,25 @@
 'use client'
 
-import React, { useState } from 'react'
+import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { clsx } from 'clsx'
 import {
   MessageSquare,
   Radar,
   Users,
   Settings,
   LogOut,
-  ChevronDown,
-  ChevronRight,
   DollarSign,
   BarChart2,
   Sparkles,
-  Medal,
   Shield,
   Headphones,
   Calculator,
-  AlertTriangle,
+  ScrollText,
+  Home,
+  ShieldAlert,
+  Fingerprint,
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -59,7 +60,7 @@ function NavItem({
 
   if (disabled || !href) {
     return (
-      <span className={`${base} text-muted-foreground/30 cursor-not-allowed select-none`}>
+      <span className={clsx(base, 'text-muted-foreground/30 cursor-not-allowed select-none')}>
         <Icon size={14} strokeWidth={1.5} className="shrink-0" />
         {label}
       </span>
@@ -69,11 +70,12 @@ function NavItem({
   return (
     <Link
       href={href}
-      className={`${base} ${
+      className={clsx(
+        base,
         isActive
-          ? 'bg-accent text-accent-foreground'
-          : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
-      }`}
+          ? 'bg-white/10 text-white'
+          : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
+      )}
     >
       <Icon size={14} strokeWidth={1.5} className="shrink-0" />
       {label}
@@ -81,37 +83,17 @@ function NavItem({
   )
 }
 
-// ─── Collapsible section ──────────────────────────────────────────────────────
+// ─── Static section label ─────────────────────────────────────────────────────
 
-function CollapsibleSection({
-  label,
-  defaultOpen = false,
-  children,
-}: {
-  label: string
-  defaultOpen?: boolean
-  children: React.ReactNode
-}) {
-  const [open, setOpen] = useState(defaultOpen)
+function NavSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-3 py-1 mt-6 mb-2"
-      >
-        <span className="font-mono text-[10px] font-bold tracking-wider text-muted-foreground/50 uppercase">
-          {label}
-        </span>
-        {open
-          ? <ChevronDown size={11} strokeWidth={2} className="text-muted-foreground/40" />
-          : <ChevronRight size={11} strokeWidth={2} className="text-muted-foreground/40" />
-        }
-      </button>
-      {open && (
-        <div className="flex flex-col gap-0.5">
-          {children}
-        </div>
-      )}
+    <div className="mt-6">
+      <p className="mb-1.5 px-3 font-mono text-[10px] font-bold tracking-widest text-muted-foreground/40 uppercase select-none">
+        {label}
+      </p>
+      <div className="flex flex-col gap-0.5">
+        {children}
+      </div>
     </div>
   )
 }
@@ -128,9 +110,10 @@ export function AdminSidebar({ role, username, email }: AdminSidebarProps) {
   const isSupport    = role === 'support'
 
   function isActive(href: string) {
-    return href === '/dashboard'
-      ? pathname === '/dashboard'
-      : pathname === href || pathname.startsWith(href + '/')
+    if (pathname === href) return true
+    // Exact-match-only routes — never mark active based on sub-paths
+    if (href === '/' || href === '/admin' || href === '/dashboard') return false
+    return pathname.startsWith(href + '/')
   }
 
   return (
@@ -150,43 +133,47 @@ export function AdminSidebar({ role, username, email }: AdminSidebarProps) {
       <nav className="flex-1 overflow-y-auto px-3 pb-4">
 
         {/* MAIN */}
-        <CollapsibleSection label="Main" defaultOpen>
-          {/* Kanban Radar: admin only */}
-          {isAdmin && (
-            <NavItem href="/dashboard/radar" label="Kanban Radar" icon={Radar} isActive={isActive('/dashboard/radar')} />
+        <NavSection label="Main">
+          <NavItem href="/" label="Main Page" icon={Home} isActive={isActive('/')} />
+          {(isAdmin || isSupport) && (
+            <NavItem href="/admin" label="Overview Radar" icon={Radar} isActive={isActive('/admin')} />
           )}
-          <NavItem href="/dashboard/master-inbox" label="Master Inbox" icon={MessageSquare} isActive={isActive('/dashboard/master-inbox')} />
-        </CollapsibleSection>
+          {(isAdmin || isSupport) && (
+            <NavItem href="/admin/master-inbox" label="Master Inbox" icon={MessageSquare} isActive={isActive('/admin/master-inbox')} />
+          )}
+        </NavSection>
 
         {/* FINANCIALS (admin + accountant) */}
         {(isAdmin || isAccountant) && (
-          <CollapsibleSection label="Financials" defaultOpen>
-            <NavItem href="/dashboard/withdrawals" label="Withdrawals" icon={DollarSign} isActive={isActive('/dashboard/withdrawals')} />
-            <NavItem href="/dashboard/revenue"     label="Revenue"     icon={BarChart2}  isActive={isActive('/dashboard/revenue')}     />
-          </CollapsibleSection>
+          <NavSection label="Financials">
+            <NavItem href="/admin/withdrawals" label="Withdrawal Management" icon={DollarSign} isActive={isActive('/admin/withdrawals')} />
+            <NavItem href="/admin/revenue"     label="Revenue"     icon={BarChart2}  isActive={isActive('/admin/revenue')}     />
+          </NavSection>
         )}
 
         {/* MANAGEMENT (admin only) */}
         {isAdmin && (
-          <CollapsibleSection label="Management" defaultOpen>
-            <NavItem href="/dashboard/users"    label="Users"             icon={Users}    isActive={isActive('/dashboard/users')}    />
-            <NavItem href="/dashboard/settings" label="Platform Settings" icon={Settings} isActive={isActive('/dashboard/settings')} />
-          </CollapsibleSection>
+          <NavSection label="Management">
+            <NavItem href="/admin/users"          label="Users"              icon={Users}       isActive={isActive('/admin/users')}          />
+            <NavItem href="/admin/security"       label="Security"           icon={Fingerprint} isActive={isActive('/admin/security')}       />
+            <NavItem href="/admin/ban-requests"   label="Ban/Unban Requests" icon={ShieldAlert} isActive={isActive('/admin/ban-requests')}   />
+            <NavItem href="/admin/settings"       label="Platform Settings"  icon={Settings}    isActive={isActive('/admin/settings')}       />
+            <NavItem href="/admin/activity-logs"  label="Activity Logs"      icon={ScrollText}  isActive={isActive('/admin/activity-logs')}  />
+          </NavSection>
         )}
 
-        {/* OPERATIONS — Active Disputes: admin only */}
-        {isAdmin && (
-          <CollapsibleSection label="Operations">
-            <NavItem href="/dashboard/radar?filter=dispute" label="Active Disputes" icon={AlertTriangle} isActive={false} />
-          </CollapsibleSection>
+        {/* USERS (support only) */}
+        {isSupport && (
+          <NavSection label="Management">
+            <NavItem href="/admin/users" label="User Management" icon={Users} isActive={isActive('/admin/users')} />
+          </NavSection>
         )}
 
-        {/* MY BOOSTER PANEL — admin only, stripped to Boosts + Tips */}
+        {/* MY BOOSTER PANEL — admin only */}
         {isAdmin && (
-          <CollapsibleSection label="My Booster Panel">
-            <NavItem href="/dashboard/boosts" label="Boosts Panel"  icon={Sparkles} isActive={isActive('/dashboard/boosts')} />
-            <NavItem href="/dashboard/tips"   label="Tips History"  icon={Medal}    isActive={isActive('/dashboard/tips')}   />
-          </CollapsibleSection>
+          <NavSection label="Booster Panel">
+            <NavItem href="/admin/boosts" label="Boosts Panel" icon={Sparkles} isActive={isActive('/admin/boosts')} />
+          </NavSection>
         )}
 
       </nav>
@@ -206,10 +193,13 @@ export function AdminSidebar({ role, username, email }: AdminSidebarProps) {
             <p className="text-sm font-semibold text-foreground truncate">{username || email}</p>
             <p className={`text-xs font-mono truncate ${panel.color}`}>{panel.label}</p>
           </div>
-          <Button size="icon" variant="ghost" className="shrink-0 text-muted-foreground hover:text-foreground" asChild>
-            <Link href="/auth/login">
-              <LogOut size={15} strokeWidth={1.5} />
-            </Link>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => { window.location.href = '/auth/signout' }}
+          >
+            <LogOut size={15} strokeWidth={1.5} />
           </Button>
         </div>
       </div>

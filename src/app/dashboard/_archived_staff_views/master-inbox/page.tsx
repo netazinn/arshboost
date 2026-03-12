@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getProfile } from '@/lib/data/profiles'
-import { getAllOrdersAdmin, getOrderAdmin, getOrderMessagesAdmin } from '@/lib/data/admin'
+import { getAllOrdersAdmin, getOrderAdmin, getOrderMessagesAdmin, getStaffDMThreads } from '@/lib/data/admin'
 import { AdminMasterInbox } from '@/components/features/dashboard/AdminMasterInbox'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
 import { MessageSquare } from 'lucide-react'
@@ -25,10 +25,11 @@ export default async function MasterInboxPage({ searchParams }: Props) {
     redirect('/dashboard')
   }
 
-  const [orders, initialOrder, initialMessages] = await Promise.all([
+  const [orders, initialOrder, initialMessages, dmThreads] = await Promise.all([
     getAllOrdersAdmin(),
     orderId ? getOrderAdmin(orderId) : Promise.resolve(null),
     orderId ? getOrderMessagesAdmin(orderId) : Promise.resolve([]),
+    getStaffDMThreads(profile.role),
   ])
 
   const currentUser: Pick<Profile, 'id' | 'role'> = { id: user.id, role: profile.role }
@@ -39,13 +40,14 @@ export default async function MasterInboxPage({ searchParams }: Props) {
         <DashboardPageHeader
           icon={MessageSquare}
           title="Master Inbox"
-          subtitle="God-mode chat — intervene in any order conversation."
+          subtitle="God-mode chat — intervene in any order conversation or reply to direct messages."
         />
         <AdminMasterInbox
           orders={orders}
           initialOrder={initialOrder}
           initialMessages={initialMessages}
           currentUser={currentUser}
+          dmThreads={dmThreads}
         />
       </main>
     </>

@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getProfile } from '@/lib/data/profiles'
 import { getAllOrdersAdmin } from '@/lib/data/admin'
+import { getGlobalSettings } from '@/lib/data/settings'
 import { KanbanBoard } from '@/components/features/dashboard/KanbanBoard'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
 import { Radar } from 'lucide-react'
@@ -18,7 +19,10 @@ export default async function RadarPage() {
     redirect('/dashboard')
   }
 
-  const orders = await getAllOrdersAdmin()
+  const [orders, settings] = await Promise.all([
+    getAllOrdersAdmin(),
+    getGlobalSettings(),
+  ])
 
   return (
     <>
@@ -28,7 +32,13 @@ export default async function RadarPage() {
           title="Kanban Radar"
           subtitle="Live overview of all orders — auto-updates via Realtime."
         />
-        <KanbanBoard initialOrders={orders} />
+        <KanbanBoard
+          initialOrders={orders}
+          slaSettings={{
+            auto_cancel_hours:   settings.auto_cancel_hours,
+            auto_complete_hours: settings.auto_complete_hours,
+          }}
+        />
       </main>
     </>
   )

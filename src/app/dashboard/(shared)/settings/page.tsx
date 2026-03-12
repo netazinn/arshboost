@@ -26,7 +26,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const tab = params.tab as string | undefined
 
   if (profile.role === 'booster') {
-    const VALID_TABS = ['general', 'notifications', 'verification', 'bank'] as const
+    const VALID_TABS = ['general', 'notifications'] as const
     type TabId = typeof VALID_TABS[number]
     const initialTab = VALID_TABS.includes(tab as TabId) ? (tab as TabId) : undefined
     return <BoosterSettingsView initialTab={initialTab} profile={profile} />

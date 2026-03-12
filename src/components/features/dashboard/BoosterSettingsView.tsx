@@ -3,9 +3,9 @@
 import Image from 'next/image'
 import { useState, useRef, useEffect } from 'react'
 import {
-  User, Bell, ShieldCheck, Building2,
+  User, Bell,
   Monitor, Smartphone, LogOut, Pen, Eye, EyeOff,
-  Settings, CheckCircle2, ChevronDown, Globe, AlertTriangle,
+  Settings, CheckCircle2, ChevronDown, Globe,
 } from 'lucide-react'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
 import type { Profile } from '@/types'
@@ -13,10 +13,8 @@ import type { Profile } from '@/types'
 // ── Tab definitions ────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'general',      label: 'General',        icon: User        },
-  { id: 'notifications',label: 'Notifications',  icon: Bell        },
-  { id: 'verification', label: 'ID Verification',icon: ShieldCheck },
-  { id: 'bank',         label: 'Bank Details',   icon: Building2   },
+  { id: 'general',       label: 'General',       icon: User },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -160,44 +158,6 @@ function LanguageSelector({ selected, onChange }: { selected: string[]; onChange
         </div>
       </div>
       <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a]">Up to {MAX} languages. Select the languages you can communicate in while boosting.</p>
-    </div>
-  )
-}
-
-// ── Bank Confirm Dialog ────────────────────────────────────────────────────────
-
-function BankConfirmDialog({ open, onCancel, onConfirm }: { open: boolean; onCancel: () => void; onConfirm: () => void }) {
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative w-full max-w-sm overflow-hidden rounded-xl border border-[#2a2a2a] bg-[#111111] p-6 shadow-2xl">
-        <div className="flex items-start gap-3 mb-4">
-          <AlertTriangle size={18} strokeWidth={1.5} className="shrink-0 mt-0.5 text-yellow-400" />
-          <div>
-            <h3 className="font-mono text-[13px] font-semibold tracking-[-0.06em] text-white">Update Bank Details?</h3>
-            <p className="mt-1.5 font-mono text-[11px] leading-relaxed tracking-[-0.04em] text-[#6e6d6f]">
-              Are you sure you want to update your bank details? They will be placed{' '}
-              <span className="text-yellow-400">under review</span> and you won't be able to change them again for{' '}
-              <span className="text-white font-semibold">30 days</span>.
-            </p>
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button
-            onClick={onCancel}
-            className="h-9 px-4 rounded-md border border-[#2a2a2a] font-mono text-[11px] tracking-[-0.05em] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="h-9 px-5 rounded-md bg-white font-mono text-[11px] font-semibold tracking-[-0.05em] text-black transition-opacity hover:bg-white/90"
-          >
-            Confirm
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -433,152 +393,6 @@ function NotificationsTab() {
   )
 }
 
-function VerificationTab() {
-  // Mock: Discord already connected and locked
-  const DISCORD_CONNECTED = true
-  const DISCORD_HANDLE    = 'booster#1234'
-
-  return (
-    <div className="grid grid-cols-2 gap-6 items-stretch">
-      {/* ID Steps */}
-      <div className="rounded-xl border border-[#2a2a2a] bg-[#111111] px-7 py-7">
-        <SectionHeading title="ID Verification" subtitle="Verify your identity to unlock full payout capabilities." />
-        <div className="flex flex-col gap-3">
-          {[
-            { step: '1', label: 'Government ID (Passport / National ID)', status: 'Uploaded',      done: true  },
-            { step: '2', label: 'Selfie with ID',                         status: 'Pending review', done: false },
-            { step: '3', label: 'Proof of address',                       status: 'Not uploaded',   done: false },
-          ].map(item => (
-            <div key={item.step} className={`flex items-center gap-3 rounded-md border px-4 py-3 ${item.done ? 'border-green-500/20 bg-green-500/5' : 'border-[#2a2a2a] bg-[#0d0d0d]'}`}>
-              <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-bold ${item.done ? 'border-green-500/30 bg-green-500/10 text-green-400' : 'border-[#2a2a2a] text-[#4a4a4a]'}`}>
-                {item.step}
-              </div>
-              <div className="flex-1">
-                <p className="font-mono text-[11px] tracking-[-0.05em] text-white">{item.label}</p>
-                <p className={`font-mono text-[10px] tracking-[-0.04em] mt-0.5 ${item.done ? 'text-green-400' : 'text-[#4a4a4a]'}`}>{item.status}</p>
-              </div>
-              {!item.done && (
-                <button className="h-7 px-3 rounded-md border border-[#2a2a2a] font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] hover:border-white/20 hover:text-white transition-colors">
-                  Upload
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Discord */}
-      <div className="rounded-xl border border-[#2a2a2a] bg-[#111111] px-7 py-7">
-        <SectionHeading title="Discord Account" subtitle="Link your primary Discord to verify your identity." />
-
-        <div className={`flex items-center justify-between gap-4 rounded-md border px-4 py-3 ${DISCORD_CONNECTED ? 'border-green-500/20 bg-green-500/5' : 'border-[#2a2a2a] bg-[#0d0d0d]'}`}>
-          <div className="flex items-center gap-3">
-            {/* Discord logo mark */}
-            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${DISCORD_CONNECTED ? 'bg-[#5865F2]/20 text-[#5865F2]' : 'bg-[#1a1a1a] text-[#6e6d6f]'}`}>
-              D
-            </div>
-            <div>
-              <p className="font-mono text-[11px] tracking-[-0.05em] text-white">Discord</p>
-              {DISCORD_CONNECTED ? (
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <CheckCircle2 size={10} strokeWidth={2} className="text-green-400" />
-                  <p className="font-mono text-[10px] tracking-[-0.04em] text-green-400">Connected as {DISCORD_HANDLE}</p>
-                </div>
-              ) : (
-                <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a] mt-0.5">Not connected</p>
-              )}
-            </div>
-          </div>
-          <button
-            disabled={DISCORD_CONNECTED}
-            className="flex h-7 items-center gap-1.5 rounded-md border border-[#2a2a2a] px-3 font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            {DISCORD_CONNECTED ? 'Connected' : 'Connect Discord'}
-          </button>
-        </div>
-
-        {/* Warning */}
-        <div className="mt-3 flex items-start gap-2 rounded-md border border-yellow-500/20 bg-yellow-500/5 px-4 py-3">
-          <AlertTriangle size={12} strokeWidth={1.5} className="mt-px shrink-0 text-yellow-400" />
-          <p className="font-mono text-[10px] leading-relaxed tracking-[-0.04em] text-yellow-400/80">
-            You must connect your <span className="font-semibold text-yellow-400">primary</span> Discord account. This can only be linked{' '}
-            <span className="font-semibold text-yellow-400">ONCE</span> and cannot be changed later.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function BankTab() {
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [saved, setSaved]           = useState(false)
-
-  function handleConfirm() {
-    setDialogOpen(false)
-    setSaved(true)
-  }
-
-  return (
-    <>
-      <BankConfirmDialog open={dialogOpen} onCancel={() => setDialogOpen(false)} onConfirm={handleConfirm} />
-
-      <div className="w-1/2 rounded-xl border border-[#2a2a2a] bg-[#111111] px-7 py-7">
-        {/* Header row with status badge */}
-        <div className="flex items-start justify-between gap-3 mb-5">
-          <div>
-            <h2 className="font-mono text-[13px] font-semibold tracking-[-0.06em] text-white">Bank Details</h2>
-            <p className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] mt-0.5">Your payout destination. Used for all withdrawal requests.</p>
-          </div>
-          {/* Status badge — swap to green/Verified once support approves */}
-          <span className="inline-flex shrink-0 items-center rounded-md border border-yellow-500/20 bg-yellow-500/10 px-2.5 py-1.5 font-mono text-[10px] tracking-[-0.03em] text-yellow-400">
-            Under Review
-          </span>
-        </div>
-
-        <div className="grid gap-6 grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <label className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f]">Holder Name</label>
-            <input defaultValue="" className="h-9 w-full rounded-md border border-[#2a2a2a] bg-[#0a0a0a] px-3 font-mono text-xs tracking-[-0.05em] text-white outline-none focus:border-[#6e6d6f] transition-colors" />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f]">Bank Name</label>
-            <input defaultValue="" className="h-9 w-full rounded-md border border-[#2a2a2a] bg-[#0a0a0a] px-3 font-mono text-xs tracking-[-0.05em] text-white outline-none focus:border-[#6e6d6f] transition-colors" />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f]">SWIFT / BIC</label>
-            <input defaultValue="" className="h-9 w-full rounded-md border border-[#2a2a2a] bg-[#0a0a0a] px-3 font-mono text-xs tracking-[-0.05em] text-white outline-none focus:border-[#6e6d6f] transition-colors" />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f]">IBAN</label>
-            <input defaultValue="" className="h-9 w-full rounded-md border border-[#2a2a2a] bg-[#0a0a0a] px-3 font-mono text-xs tracking-[-0.05em] text-white outline-none focus:border-[#6e6d6f] transition-colors" />
-          </div>
-        </div>
-
-        <div className="mt-5 flex items-center justify-between gap-3">
-          <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a]">
-            Bank details can only be updated once every 30 days.
-          </p>
-          <div className="flex items-center gap-3">
-            {saved && (
-              <span className="flex items-center gap-1.5 font-mono text-[10px] tracking-[-0.04em] text-green-400">
-                <CheckCircle2 size={11} strokeWidth={2} />
-                Submitted for review
-              </span>
-            )}
-            <button
-              onClick={() => setDialogOpen(true)}
-              className="h-9 px-5 rounded-md bg-white font-mono text-[11px] font-semibold tracking-[-0.05em] text-black hover:bg-white/90 transition-opacity"
-            >
-              Update Bank Details
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
-  )
-}
-
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function BoosterSettingsView({ initialTab, profile }: { initialTab?: TabId; profile?: Profile } = {}) {
@@ -587,8 +401,6 @@ export function BoosterSettingsView({ initialTab, profile }: { initialTab?: TabI
   const TAB_CONTENT: Record<TabId, React.ReactNode> = {
     general:       <GeneralTab profile={profile} />,
     notifications: <NotificationsTab />,
-    verification:  <VerificationTab />,
-    bank:          <BankTab />,
   }
 
   return (

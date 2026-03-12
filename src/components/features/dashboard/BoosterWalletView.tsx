@@ -1,6 +1,10 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
+import { calculateBoosterPayout } from '@/lib/payout'
+import { requestWithdrawalAction } from '@/lib/actions/withdrawals'
+import type { Order, Withdrawal } from '@/types'
 import {
   Wallet,
   ArrowUpRight,
@@ -14,14 +18,19 @@ import {
   ChevronLast,
   ChevronLeft,
   ChevronRight,
+  Loader2,
+  AlertCircle,
+  Clock,
+  XCircle,
 } from 'lucide-react'
 import Link from 'next/link'
 import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
-import type { Order } from '@/types'
 
 const STATUS_BADGE: Record<string, string> = {
-  paid:    'text-green-400 bg-green-500/10 border border-green-500/20',
-  pending: 'text-yellow-400 bg-yellow-500/10 border border-yellow-500/20',
+  paid:     'text-green-400 bg-green-500/10 border border-green-500/20',
+  pending:  'text-yellow-400 bg-yellow-500/10 border border-yellow-500/20',
+  approved: 'text-green-400 bg-green-500/10 border border-green-500/20',
+  rejected: 'text-red-400 bg-red-500/10 border border-red-500/20',
 }
 
 // ── Filter dropdown ───────────────────────────────────────────────────────────
@@ -93,18 +102,30 @@ function buildBoostTitle(order: Order): string {
   return `${from}${to}${winsStr}`
 }
 
-export function BoosterWalletView({ orders }: { orders: Order[] }) {
+export function BoosterWalletView({ orders, withdrawals: initialWithdrawals, availableBalance, bankDetails }: {
+  orders: Order[]
+  withdrawals: Withdrawal[]
+  availableBalance: number
+  bankDetails: {
+    holder: string | null
+    bank: string | null
+    swift: string | null
+    iban: string | null
+    status: 'none' | 'approved' | 'under_review'
+  }
+}) {
+  const router = useRouter()
   // ── Derived data from real orders ──────────────────────────────────────────
   const completed  = orders.filter(o => o.status === 'completed')
   const inProgress = orders.filter(o => o.status === 'in_progress')
-  const BALANCE    = completed.reduce((s, o) => s + o.price, 0)
-  const PENDING    = inProgress.reduce((s, o) => s + o.price, 0)
-  const TOTAL_PAID = 0 // no payout ledger table yet
+  const BALANCE    = availableBalance
+  const PENDING    = inProgress.reduce((s, o) => s + calculateBoosterPayout(o.price).boosterPayout, 0)
+  const TOTAL_PAID = initialWithdrawals.filter(w => w.status === 'approved').reduce((s, w) => s + w.amount, 0)
 
   const PAYMENTS = orders.map(o => ({
     id:     o.id.slice(0, 8).toUpperCase(),
     boost:  buildBoostTitle(o),
-    amount: o.price,
+    amount: calculateBoosterPayout(o.price).boosterPayout,
     status: o.status === 'completed' ? 'paid' : 'pending',
     date:   o.updated_at.slice(0, 10),
   }))
@@ -113,17 +134,26 @@ export function BoosterWalletView({ orders }: { orders: Order[] }) {
     id:          `TXN-${o.id.slice(0, 6).toUpperCase()}`,
     type:        'earning',
     description: buildBoostTitle(o),
-    amount:      +o.price,
+    amount:      calculateBoosterPayout(o.price).boosterPayout,
     date:        o.updated_at.slice(0, 10),
   }))
 
-  const BANK = { holder: '', iban: '', bank: '', swift: '' }
+  const BANK = {
+    holder: bankDetails.holder ?? '',
+    iban:   bankDetails.iban   ?? '',
+    bank:   bankDetails.bank   ?? '',
+    swift:  bankDetails.swift  ?? '',
+  }
+  const bankApproved = bankDetails.status === 'approved'
 
+  // withdrawal state
+  const [withdrawals, setWithdrawals] = useState<Withdrawal[]>(initialWithdrawals)
+  const [withdrawAmount,  setWithdrawAmount]  = useState('')
+  const [withdrawError,   setWithdrawError]   = useState<string | null>(null)
+  const [withdrawSuccess, setWithdrawSuccess] = useState(false)
+  const [withdrawPending, startWithdraw]      = useTransition()
 
-  // tab state
-  const [tab, setTab] = useState<'payments' | 'transactions'>('payments')
-
-  // payments state
+  // withdrawal state
   const [payQuery,        setPayQuery]        = useState('')
   const [payStatusFilter, setPayStatusFilter] = useState<Set<string>>(new Set())
   const [paySortAsc,      setPaySortAsc]      = useState(false)
@@ -135,19 +165,51 @@ export function BoosterWalletView({ orders }: { orders: Order[] }) {
   const [txSortAsc,      setTxSortAsc]      = useState(false)
   const [txPage,         setTxPage]         = useState(1)
 
-  // withdrawal state
-  const [withdrawAmount, setWithdrawAmount] = useState('')
-  const [withdrawDone,   setWithdrawDone]   = useState(false)
+  // tab state
+  const [tab, setTab] = useState<'payments' | 'transactions' | 'withdrawals'>('payments')
 
   function toggleFilter(setter: React.Dispatch<React.SetStateAction<Set<string>>>, val: string) {
     setter((prev) => { const next = new Set(prev); next.has(val) ? next.delete(val) : next.add(val); return next })
   }
 
+  // withdrawal list state
+  const [wdQuery,        setWdQuery]        = useState('')
+  const [wdStatusFilter, setWdStatusFilter] = useState<Set<string>>(new Set())
+  const [wdSortAsc,      setWdSortAsc]      = useState(false)
+  const [wdPage,         setWdPage]         = useState(1)
+
   function handleWithdraw() {
     const amt = parseFloat(withdrawAmount)
-    if (!amt || amt <= 0 || amt > BALANCE) return
-    setWithdrawDone(true)
-    setTimeout(() => { setWithdrawDone(false); setWithdrawAmount('') }, 3000)
+    if (!amt || amt < 50 || amt > BALANCE) return
+    if (!bankApproved) return
+    setWithdrawError(null)
+    setWithdrawSuccess(false)
+    startWithdraw(async () => {
+      const result = await requestWithdrawalAction(amt)
+      if (result.error) {
+        setWithdrawError(result.error)
+      } else {
+        setWithdrawSuccess(true)
+        setWithdrawAmount('')
+        // optimistic: add new pending row to local list
+        setWithdrawals(prev => [{
+          id: result.withdrawalId ?? crypto.randomUUID(),
+          booster_id: '',
+          amount: amt,
+          payout_details: bankDetails.iban,
+          status: 'pending',
+          transaction_id: null,
+          receipt_url: null,
+          notes: null,
+          reviewed_by: null,
+          reviewed_at: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, ...prev])
+        router.refresh()
+        setTimeout(() => setWithdrawSuccess(false), 6000)
+      }
+    })
   }
 
   function formatDate(iso: string) {
@@ -294,48 +356,91 @@ export function BoosterWalletView({ orders }: { orders: Order[] }) {
             <ArrowUpRight size={14} strokeWidth={1.5} className="text-[#6e6d6f]" />
             <span className="font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-white">Request Withdrawal</span>
           </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex flex-col gap-1.5 flex-1 min-w-[140px]">
-              <label className="font-mono text-[10px] uppercase tracking-[0.06em] text-[#6e6d6f]">Amount (USD)</label>
-              <div className="flex items-center gap-2 h-9 rounded-md border border-[#2a2a2a] bg-[#0d0d0d] px-3">
-                <span className="font-mono text-xs text-[#6e6d6f]">$</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={BALANCE}
-                  value={withdrawAmount}
-                  onChange={e => setWithdrawAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="flex-1 bg-transparent font-mono text-xs tracking-[-0.05em] text-white placeholder:text-[#3a3a3a] outline-none"
-                />
-              </div>
+
+          {/* Success banner */}
+          {withdrawSuccess && (
+            <div className="flex items-center gap-2.5 rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2.5">
+              <CheckCircle2 size={13} strokeWidth={2} className="shrink-0 text-green-400" />
+              <span className="font-mono text-[11px] tracking-[-0.04em] text-green-400">Withdrawal requested. Balance updated — processed within 1–3 business days.</span>
             </div>
-            <button
-              onClick={() => setWithdrawAmount(String(BALANCE))}
-              className="h-9 px-3 rounded-md border border-[#2a2a2a] font-mono text-[11px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white"
-            >
-              Max
-            </button>
+          )}
+
+          {/* Error banner */}
+          {withdrawError && (
+            <div className="flex items-center gap-2.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+              <AlertCircle size={13} strokeWidth={2} className="shrink-0 text-red-400" />
+              <span className="font-mono text-[11px] tracking-[-0.04em] text-red-400">{withdrawError}</span>
+            </div>
+          )}
+
+          {/* Bank not approved notice */}
+          {!bankApproved && (
+            <div className="flex items-start gap-2.5 rounded-md border border-yellow-500/20 bg-yellow-500/5 px-3 py-2.5">
+              <AlertCircle size={13} strokeWidth={2} className="shrink-0 mt-px text-yellow-400" />
+              <span className="font-mono text-[11px] tracking-[-0.04em] text-yellow-400/80">
+                {bankDetails.status === 'under_review'
+                  ? 'Your bank details are under review. Withdrawals will be available once approved.'
+                  : 'Add your bank details in Settings before requesting a withdrawal.'}
+              </span>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3">
+            {/* Amount row */}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col gap-1.5 flex-1 min-w-[140px]">
+                <label className="font-mono text-[10px] uppercase tracking-[0.06em] text-[#6e6d6f]">Amount (USD)</label>
+                <div className="flex items-center gap-2 h-9 rounded-md border border-[#2a2a2a] bg-[#0d0d0d] px-3">
+                  <span className="font-mono text-xs text-[#6e6d6f]">$</span>
+                  <input
+                    type="number"
+                    min={50}
+                    max={BALANCE}
+                    value={withdrawAmount}
+                    onChange={e => { setWithdrawAmount(e.target.value); setWithdrawError(null) }}
+                    placeholder="0.00"
+                    className="flex-1 bg-transparent font-mono text-xs tracking-[-0.05em] text-white placeholder:text-[#3a3a3a] outline-none"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={() => setWithdrawAmount(BALANCE.toFixed(2))}
+                className="h-9 px-3 rounded-md border border-[#2a2a2a] font-mono text-[11px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white"
+              >
+                Max
+              </button>
+            </div>
+
+            {/* Payout details removed — IBAN is sourced from approved bank details in profile */}
+
+            {/* Submit */}
             <button
               onClick={handleWithdraw}
-              disabled={!withdrawAmount || parseFloat(withdrawAmount) <= 0 || parseFloat(withdrawAmount) > BALANCE}
-              className="h-9 px-5 rounded-md bg-white font-mono text-[11px] font-semibold tracking-[-0.05em] text-black transition-opacity hover:bg-white/90 disabled:opacity-30 flex items-center gap-1.5"
+              disabled={
+                withdrawPending ||
+                !withdrawAmount ||
+                parseFloat(withdrawAmount) < 50 ||
+                parseFloat(withdrawAmount) > BALANCE ||
+                !bankApproved
+              }
+              className="flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-white font-mono text-[11px] font-semibold tracking-[-0.05em] text-black transition-opacity hover:bg-white/90 disabled:opacity-30"
             >
-              {withdrawDone
-                ? <><CheckCircle2 size={13} strokeWidth={2} className="text-green-600" /> Requested!</>
-                : <><ArrowUpRight size={13} strokeWidth={2} /> Withdraw</>
+              {withdrawPending
+                ? <><Loader2 size={13} strokeWidth={2} className="animate-spin" /> Processing…</>
+                : <><ArrowUpRight size={13} strokeWidth={2} /> Request Withdrawal</>
               }
             </button>
           </div>
+
           <p className="font-mono text-[10px] tracking-[-0.04em] text-[#3c3c3c]">
-            Min. $10 · Processed within 1–3 business days · Transferred to your registered IBAN.
+            Min. $50 · Processed within 1–3 business days · Balance deducted immediately upon request.
           </p>
         </div>
       </div>
 
       {/* ── Tabs ── */}
       <div className="flex gap-px overflow-hidden rounded-md border border-[#2a2a2a] w-fit">
-        {(['payments', 'transactions'] as const).map(t => (
+        {(['payments', 'transactions', 'withdrawals'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -343,7 +448,7 @@ export function BoosterWalletView({ orders }: { orders: Order[] }) {
               tab === t ? 'bg-white text-black' : 'bg-[#111111] text-[#6e6d6f] hover:text-white'
             }`}
           >
-            {t}
+            {t === 'withdrawals' ? `Withdrawals${withdrawals.length ? ` (${withdrawals.length})` : ''}` : t}
           </button>
         ))}
       </div>
@@ -501,6 +606,107 @@ export function BoosterWalletView({ orders }: { orders: Order[] }) {
           </div>
 
           <PaginationRow safePage={txSafePage} totalPages={txTotalPages} setPage={setTxPage} />
+        </div>
+      )}
+
+      {/* ── Withdrawals tab ── */}
+      {tab === 'withdrawals' && (
+        <div className="flex flex-col gap-3">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="relative min-w-[180px] max-w-xs flex-1">
+              <Search size={13} strokeWidth={1.5} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#4a4a4a]" />
+              <input
+                type="search"
+                value={wdQuery}
+                onChange={(e) => { setWdQuery(e.target.value); setWdPage(1) }}
+                placeholder="Search withdrawals…"
+                className="h-9 w-full rounded-md border border-[#2a2a2a] bg-[#0d0d0d] pl-8 pr-3 font-mono text-xs tracking-[-0.05em] text-white placeholder:text-[#4a4a4a] transition-colors focus:border-[#6e6d6f] focus:outline-none"
+              />
+            </div>
+            <FilterDropdown
+              label="Status"
+              options={['Pending', 'Approved', 'Rejected']}
+              selected={wdStatusFilter}
+              onChange={(v) => { toggleFilter(setWdStatusFilter, v); setWdPage(1) }}
+            />
+            <button
+              onClick={() => { setWdSortAsc((v) => !v); setWdPage(1) }}
+              className="flex h-9 items-center gap-1.5 rounded-md border border-[#2a2a2a] px-3 font-mono text-xs tracking-[-0.05em] text-[#6e6d6f] transition-all hover:border-[#6e6d6f] hover:text-white"
+            >
+              <ArrowUpDown size={12} strokeWidth={1.5} />
+              Date
+              <span className="text-[10px] text-[#4a4a4a]">{wdSortAsc ? '↑' : '↓'}</span>
+            </button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-[#2a2a2a] bg-[#111111]">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead className="sticky top-0 z-10">
+                  <tr className="border-b border-[#2a2a2a] bg-[#111111]">
+                    {['WITHDRAWAL ID', 'PAYOUT DESTINATION', 'AMOUNT', 'STATUS', 'DATE'].map((h) => (
+                      <th key={h} className="px-4 py-3 text-left font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-white">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const filtered = withdrawals
+                      .filter((w) => {
+                        if (wdStatusFilter.size && !wdStatusFilter.has(w.status.charAt(0).toUpperCase() + w.status.slice(1))) return false
+                        if (wdQuery) {
+                          const q = wdQuery.toLowerCase()
+                          if (!w.id.toLowerCase().includes(q) && !(w.payout_details ?? '').toLowerCase().includes(q)) return false
+                        }
+                        return true
+                      })
+                      .sort((a, b) => {
+                        const cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                        return wdSortAsc ? cmp : -cmp
+                      })
+                    const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+                    const safePage   = Math.min(wdPage, totalPages)
+                    const rows       = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+                    return (
+                      <>
+                        {rows.length === 0 ? (
+                          <tr><td colSpan={5} className="px-4 py-16 text-center font-mono text-xs text-[#4a4a4a]">No withdrawal requests yet.</td></tr>
+                        ) : rows.map((w, i) => (
+                          <tr key={w.id} className={`border-b border-white/5 transition-colors hover:bg-white/[0.03] ${i === rows.length - 1 ? 'border-none' : ''}`}>
+                            <td className="px-4 py-3.5">
+                              <span className="font-mono text-[11px] tracking-[-0.05em] text-[#6e6d6f]">WD-{w.id.slice(0, 8).toUpperCase()}</span>
+                            </td>
+                            <td className="px-4 py-3.5 max-w-[220px]">
+                              <span className="font-mono text-xs tracking-[-0.05em] text-white truncate block">{w.payout_details ?? '—'}</span>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <span className="font-mono text-xs font-semibold tracking-[-0.05em] text-red-400">-${w.amount.toFixed(2)}</span>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 font-mono text-[10px] tracking-[-0.03em] ${STATUS_BADGE[w.status]}`}>
+                                {w.status === 'pending'  && <Clock    size={10} strokeWidth={2} />}
+                                {w.status === 'approved' && <CheckCircle2 size={10} strokeWidth={2} />}
+                                {w.status === 'rejected' && <XCircle  size={10} strokeWidth={2} />}
+                                {w.status.charAt(0).toUpperCase() + w.status.slice(1)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <span className="font-mono text-[11px] tracking-[-0.05em] text-[#6e6d6f]">{formatDate(w.created_at)}</span>
+                            </td>
+                          </tr>
+                        ))}
+                        {filtered.length > PAGE_SIZE && (
+                          <tr><td colSpan={5} className="px-4 pb-3">
+                            <PaginationRow safePage={safePage} totalPages={totalPages} setPage={setWdPage} />
+                          </td></tr>
+                        )}
+                      </>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </main>

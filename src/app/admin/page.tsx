@@ -1,0 +1,42 @@
+import { redirect } from 'next/navigation'
+import { createClient } from '@/lib/supabase/server'
+import { getProfile } from '@/lib/data/profiles'
+import { getAllOrdersAdmin } from '@/lib/data/admin'
+import { getGlobalSettings } from '@/lib/data/settings'
+import { KanbanBoard } from '@/components/features/dashboard/KanbanBoard'
+import { DashboardPageHeader } from '@/components/features/dashboard/DashboardPageHeader'
+import { Radar } from 'lucide-react'
+
+export const dynamic = 'force-dynamic'
+export const metadata = { title: 'Kanban Radar – ArshBoost', robots: { index: false } }
+
+export default async function AdminPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
+
+  const profile = await getProfile(user.id)
+  if (!profile || !['admin', 'support'].includes(profile.role)) redirect('/')
+
+  const [orders, settings] = await Promise.all([
+    getAllOrdersAdmin(),
+    getGlobalSettings(),
+  ])
+
+  return (
+    <main className="flex-1 min-h-0 overflow-hidden w-full max-w-[1600px] mx-auto px-8 py-10 flex flex-col gap-6">
+      <DashboardPageHeader
+        icon={Radar}
+        title="Kanban Radar"
+        subtitle="Live overview of all orders — auto-updates via Realtime."
+      />
+      <KanbanBoard
+        initialOrders={orders}
+        slaSettings={{
+          auto_cancel_hours:   settings.auto_cancel_hours,
+          auto_complete_hours: settings.auto_complete_hours,
+        }}
+      />
+    </main>
+  )
+}

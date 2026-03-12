@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Order, ChatMessage } from '@/types'
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -51,9 +52,14 @@ export async function getOrderById(orderId: string): Promise<Order | null> {
 // ─── Chat messages ────────────────────────────────────────────────────────────
 
 export async function getOrderMessages(orderId: string): Promise<ChatMessage[]> {
-  const supabase = await createClient()
+  // Use service-role so the sender:profiles join always succeeds regardless of the
+  // caller's role — clients/boosters cannot read admin/support profiles via RLS.
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from('chat_messages')
     .select(`
       *,

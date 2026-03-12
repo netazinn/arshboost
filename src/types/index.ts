@@ -8,6 +8,15 @@ export interface Profile {
   role: UserRole
   username: string | null
   avatar_url: string | null
+  balance?: number
+  bank_holder_name?: string | null
+  bank_name?: string | null
+  bank_swift?: string | null
+  bank_iban?: string | null
+  bank_details_status?: 'none' | 'approved' | 'under_review'
+  bank_details_updated_at?: string | null
+  is_banned?: boolean
+  last_sign_in_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -45,10 +54,13 @@ export type OrderStatus =
   | 'pending'
   | 'awaiting_payment'
   | 'in_progress'
+  | 'waiting_action'
   | 'completed'
+  | 'approved'
   | 'cancelled'
   | 'dispute'
   | 'support'
+  | 'cancel_requested'
 
 export interface Order {
   id: string
@@ -57,15 +69,22 @@ export interface Order {
   game_id: string
   service_id: string
   status: OrderStatus
+  support_needed?: boolean
+  proof_image_url?: string | null
   price: number
+  net_payout: number | null
   details: Record<string, unknown>
   created_at: string
   updated_at: string
+  completed_at: string | null
   // Dispute resolution (admin/support)
   resolution_notes?: string | null
   resolution_client_pct?: number | null
   resolved_by?: string | null
   resolved_at?: string | null
+  // Takeover
+  is_takeover?: boolean
+  takeover_note?: string | null
   game?: Game
   service?: GameService
   client?: Profile
@@ -104,6 +123,7 @@ export interface Withdrawal {
   id: string
   booster_id: string
   amount: number
+  payout_details: string | null
   status: WithdrawalStatus
   transaction_id: string | null
   receipt_url: string | null

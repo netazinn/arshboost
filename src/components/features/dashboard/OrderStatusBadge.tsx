@@ -8,6 +8,9 @@ const STATUS_STYLES: Record<OrderStatus, string> = {
   cancelled:        'bg-red-500/10 text-red-400',
   dispute:          'bg-orange-500/10 text-orange-400',
   support:          'bg-blue-500/10 text-blue-400',
+  waiting_action:   'bg-purple-500/10 text-purple-400',
+  cancel_requested: 'bg-red-500/10 text-red-300',
+  approved:         'bg-emerald-500/10 text-emerald-400',
 }
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -18,6 +21,9 @@ const STATUS_LABELS: Record<OrderStatus, string> = {
   cancelled:        'Cancelled',
   dispute:          'Dispute',
   support:          'Support',
+  waiting_action:   'Waiting Action',
+  cancel_requested: 'Cancel Requested',
+  approved:         'Approved',
 }
 
 interface OrderStatusBadgeProps {

@@ -8,6 +8,7 @@ import {
   fetchNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  clearAllNotifications,
 } from '@/lib/actions/notifications'
 import type { AppNotification } from '@/lib/actions/notifications'
 import type { BoosterStats } from '@/lib/supabase/queries/booster'
@@ -75,6 +76,11 @@ export function BoosterDashboard({ username, userId, stats }: { username: string
   function handleMarkAllRead() {
     setNotifs((prev) => prev.map((n) => ({ ...n, read: true })))
     markAllNotificationsRead().catch(console.error)
+  }
+
+  function handleClearAll() {
+    setNotifs([])
+    clearAllNotifications().catch(console.error)
   }
 
   const unreadCount = notifs.filter((n) => !n.read).length
@@ -184,13 +190,23 @@ export function BoosterDashboard({ username, userId, stats }: { username: string
                 Notifications
               </span>
             </div>
-            {unreadCount > 0 && (
-              <button
-                onClick={handleMarkAllRead}
-                className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
-              >
-                Mark all read
-              </button>
+            {notifs.length > 0 && (
+              <div className="flex items-center gap-3">
+                {unreadCount > 0 && (
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
+                  >
+                    Mark all read
+                  </button>
+                )}
+                <button
+                  onClick={handleClearAll}
+                  className="font-mono text-[10px] tracking-[-0.04em] text-[#6e6d6f] transition-colors hover:text-white"
+                >
+                  Clear all
+                </button>
+              </div>
             )}
           </div>
 

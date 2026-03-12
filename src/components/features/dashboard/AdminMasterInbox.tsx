@@ -5,13 +5,16 @@ import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import {
   Shield, Headphones, Search, SendHorizonal, Loader2,
-  AlertTriangle, CheckCircle2, ChevronDown,
+  AlertTriangle, CheckCircle2, ChevronDown, MessageSquare, Briefcase, Trash2,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { sendAdminMessage, resolveDispute } from '@/lib/actions/admin'
+import { sendAdminMessage, resolveDispute, sendAdminDmReply, deleteStaffDmThread, relistDisputedOrder } from '@/lib/actions/admin'
+import { getSenderProfile } from '@/lib/actions/chat'
 import { SystemMessageDivider, SYS_COLOR_MAP } from '@/components/features/dashboard/ChatPanel'
 import { GAME_ICONS } from '@/lib/config/game-icons'
+import { calculateBoosterPayout } from '@/lib/payout'
 import type { Order, ChatMessage, Profile, OrderStatus } from '@/types'
+import type { StaffDmThread } from '@/lib/data/admin'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +23,14 @@ interface Props {
   initialOrder: Order | null
   initialMessages: ChatMessage[]
   currentUser: Pick<Profile, 'id' | 'role'>
+  dmThreads: StaffDmThread[]
 }
+
+type SidebarTab = 'dms' | 'orders'
+type Selection =
+  | { kind: 'order'; order: Order }
+  | { kind: 'dm'; thread: StaffDmThread }
+  | null
 
 // ─── Status config ────────────────────────────────────────────────────────────
 
@@ -64,23 +74,40 @@ function getAdminLabel(role: string) {
   return '[STAFF]'
 }
 
-// ─── Dispute Resolution Module ────────────────────────────────────────────────
+// ─── Dispute Resolution Engine ────────────────────────────────────────────────
 
-function DisputeResolution({ order, onResolved }: { order: Order; onResolved: () => void }) {
-  const [pct, setPct]         = useState(50)
-  const [notes, setNotes]     = useState('')
-  const [loading, setLoading] = useState(false)
-  const [done, setDone]       = useState(false)
-  const price = order.price
+function DisputeResolutionEngine({ order, onResolved }: { order: Order; onResolved: () => void }) {
+  const { boosterPayout } = calculateBoosterPayout(order.price)
+  const [tab, setTab]           = useState<'refund' | 'payout' | 'custom' | 'takeover'>('custom')
+  const [boosterPct, setBoosterPct] = useState(50)
+  const [notes, setNotes]       = useState('')
+  const [loading, setLoading]   = useState(false)
+  const [done, setDone]         = useState(false)
+  const [err, setErr]           = useState('')
+  // Takeover-specific state
+  const [oldBoosterCut, setOldBoosterCut] = useState('')
+  const [newPrice, setNewPrice]           = useState(order.price.toFixed(2))
+  const [takeoverNote, setTakeoverNote]   = useState('')
 
-  function clientAmt()  { return ((pct / 100) * price).toFixed(2) }
-  function boosterAmt() { return (((100 - pct) / 100) * price).toFixed(2) }
+  const customCredit = Math.round(boosterPayout * (boosterPct / 100) * 100) / 100
 
   async function execute() {
     setLoading(true)
-    const { error } = await resolveDispute({ orderId: order.id, clientPct: pct, notes })
+    setErr('')
+    let res: { error?: string }
+    if (tab === 'takeover') {
+      const cut = parseFloat(oldBoosterCut)
+      const np  = parseFloat(newPrice)
+      if (isNaN(cut) || cut < 0) { setErr('Enter a valid booster payout amount'); setLoading(false); return }
+      if (isNaN(np)  || np <= 0)  { setErr('Enter a valid new order price');        setLoading(false); return }
+      res = await relistDisputedOrder({ orderId: order.id, oldBoosterCut: cut, newPrice: np, takeoverNote })
+    } else {
+      const mode = tab === 'refund' ? 'full_refund' : tab === 'payout' ? 'full_payout' : 'custom'
+      const pct  = tab === 'refund' ? 0 : tab === 'payout' ? 100 : boosterPct
+      res = await resolveDispute({ orderId: order.id, mode, boosterPct: pct, notes })
+    }
     setLoading(false)
-    if (!error) { setDone(true); onResolved() }
+    if (res.error) { setErr(res.error) } else { setDone(true); onResolved() }
   }
 
   if (done) {
@@ -97,70 +124,142 @@ function DisputeResolution({ order, onResolved }: { order: Order; onResolved: ()
       <div className="flex items-center gap-2">
         <AlertTriangle size={13} strokeWidth={1.5} className="text-orange-400 shrink-0" />
         <p className="font-mono text-[11px] font-semibold tracking-[-0.06em] text-orange-400">
-          Dispute Resolution Module
+          Resolution Engine
         </p>
       </div>
 
-      {/* Quick buttons */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setPct(100)}
-          className="flex-1 rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1.5 font-mono text-[10px] tracking-[-0.04em] text-blue-400 hover:bg-blue-500/20 transition-colors"
-        >
-          Full Refund (Client)
-        </button>
-        <button
-          onClick={() => setPct(0)}
-          className="flex-1 rounded border border-green-500/30 bg-green-500/10 px-2 py-1.5 font-mono text-[10px] tracking-[-0.04em] text-green-400 hover:bg-green-500/20 transition-colors"
-        >
-          Pay in Full (Booster)
-        </button>
+      {/* Mode tabs */}
+      <div className="flex gap-1 rounded-md border border-[#2a2a2a] bg-[#0f0f0f] p-0.5">
+        {([
+          { key: 'refund',   label: 'Refund',    color: 'text-blue-400'   },
+          { key: 'payout',   label: 'Pay Out',   color: 'text-green-400'  },
+          { key: 'custom',   label: 'Split',     color: 'text-orange-400' },
+          { key: 'takeover', label: 'Takeover',  color: 'text-amber-400'  },
+        ] as const).map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex-1 rounded py-1.5 font-mono text-[9px] tracking-[-0.02em] font-semibold transition-colors ${
+              tab === key ? `bg-[#1e1e1e] ${color}` : 'text-[#4a4a4a] hover:text-[#9a9a9a]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Slider */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between font-mono text-[9px] text-[#6e6d6f] tracking-[-0.03em]">
-          <span>Booster gets ${boosterAmt()}</span>
-          <span>Client gets ${clientAmt()}</span>
+      {/* Mode description */}
+      {tab === 'refund' && (
+        <div className="rounded border border-blue-500/20 bg-blue-500/5 px-3 py-2">
+          <p className="font-mono text-[10px] tracking-[-0.04em] text-blue-300">
+            Client wins — order set to <span className="font-semibold">Cancelled</span>.
+          </p>
+          <p className="font-mono text-[9px] tracking-[-0.03em] text-[#4a4a4a] mt-1">
+            No wallet changes. Process refund via payment gateway.
+          </p>
         </div>
-        <input
-          type="range" min={0} max={100} value={pct}
-          onChange={(e) => setPct(Number(e.target.value))}
-          className="w-full accent-orange-400 cursor-pointer"
-        />
-        <div className="flex items-center gap-2">
-          <div className="flex-1 flex items-center gap-1.5 rounded border border-[#2a2a2a] bg-[#0f0f0f] px-2 py-1">
-            <span className="font-mono text-[10px] text-[#4a4a4a]">Client $</span>
+      )}
+      {tab === 'payout' && (
+        <div className="rounded border border-green-500/20 bg-green-500/5 px-3 py-2">
+          <p className="font-mono text-[10px] tracking-[-0.04em] text-green-300">
+            Booster wins — order set to <span className="font-semibold">Completed</span>.
+          </p>
+          <p className="font-mono text-[9px] tracking-[-0.03em] text-[#4a4a4a] mt-1">
+            Full net <span className="text-green-400 font-semibold">${boosterPayout.toFixed(2)}</span> credited to booster wallet.
+          </p>
+        </div>
+      )}
+      {tab === 'custom' && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between font-mono text-[9px] text-[#6e6d6f] tracking-[-0.03em]">
+            <span>Booster cut: <span className="text-white font-semibold">{boosterPct}%</span></span>
+            <span className="text-green-400 font-semibold">${customCredit.toFixed(2)}</span>
+          </div>
+          <input
+            type="range" min={0} max={100} value={boosterPct}
+            onChange={(e) => setBoosterPct(Number(e.target.value))}
+            className="w-full accent-orange-400 cursor-pointer"
+          />
+          <div className="flex items-center gap-1.5 rounded border border-[#2a2a2a] bg-[#0f0f0f] px-2 py-1">
+            <span className="font-mono text-[9px] text-[#4a4a4a]">Booster $</span>
             <input
-              type="number" min={0} max={price} step={0.01}
-              value={clientAmt()}
+              type="number" min={0} max={boosterPayout} step={0.01}
+              value={customCredit}
               onChange={(e) => {
-                const v = Math.min(price, Math.max(0, parseFloat(e.target.value) || 0))
-                setPct(Math.round((v / price) * 100))
+                const v = Math.min(boosterPayout, Math.max(0, parseFloat(e.target.value) || 0))
+                setBoosterPct(boosterPayout > 0 ? Math.round((v / boosterPayout) * 100) : 0)
               }}
               className="flex-1 bg-transparent font-mono text-[10px] text-white outline-none w-16"
             />
           </div>
-          <span className="font-mono text-[10px] text-[#4a4a4a]">{pct}%</span>
+          <p className="font-mono text-[9px] tracking-[-0.03em] text-[#4a4a4a]">
+            Amount credited to booster wallet. Order → <span className="text-white">Completed</span>.
+          </p>
         </div>
-      </div>
+      )}
+      {tab === 'takeover' && (
+        <div className="flex flex-col gap-2">
+          <div className="rounded border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+            <p className="font-mono text-[10px] tracking-[-0.04em] text-amber-300">
+              Partial payout → re-list as <span className="font-semibold">Takeover</span> order.
+            </p>
+            <p className="font-mono text-[9px] tracking-[-0.03em] text-[#4a4a4a] mt-1">
+              Old booster is credited and unassigned. Order is re-listed for a new booster.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 rounded border border-[#2a2a2a] bg-[#0f0f0f] px-2 py-1">
+            <span className="font-mono text-[9px] text-[#4a4a4a] shrink-0">Old Booster Payout $</span>
+            <input
+              type="number" min={0} step={0.01} placeholder="0.00"
+              value={oldBoosterCut}
+              onChange={(e) => setOldBoosterCut(e.target.value)}
+              className="flex-1 bg-transparent font-mono text-[10px] text-white outline-none w-16"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 rounded border border-[#2a2a2a] bg-[#0f0f0f] px-2 py-1">
+            <span className="font-mono text-[9px] text-[#4a4a4a] shrink-0">New Order Price $</span>
+            <input
+              type="number" min={0.01} step={0.01}
+              value={newPrice}
+              onChange={(e) => setNewPrice(e.target.value)}
+              className="flex-1 bg-transparent font-mono text-[10px] text-white outline-none w-16"
+            />
+          </div>
+          <textarea
+            placeholder="Takeover note (e.g. Account is Gold 3, play to Diamond 1)..."
+            value={takeoverNote}
+            onChange={(e) => setTakeoverNote(e.target.value)}
+            rows={3}
+            className="w-full rounded border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 font-mono text-[10px] tracking-[-0.04em] text-white placeholder-[#3a3a3a] outline-none resize-none focus:border-amber-500/30 transition-colors"
+          />
+        </div>
+      )}
 
-      {/* Notes */}
-      <textarea
-        placeholder="Resolution notes (optional)..."
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        rows={2}
-        className="w-full rounded border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 font-mono text-[10px] tracking-[-0.04em] text-white placeholder-[#3a3a3a] outline-none resize-none focus:border-[#4a4a4a] transition-colors"
-      />
+      {/* Notes — not shown for takeover (has its own note field) */}
+      {tab !== 'takeover' && (
+        <textarea
+          placeholder="Resolution notes (optional)..."
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          className="w-full rounded border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 font-mono text-[10px] tracking-[-0.04em] text-white placeholder-[#3a3a3a] outline-none resize-none focus:border-[#4a4a4a] transition-colors"
+        />
+      )}
+
+      {err && <p className="font-mono text-[9px] text-red-400 tracking-[-0.03em]">{err}</p>}
 
       <button
         onClick={execute}
         disabled={loading}
-        className="flex items-center justify-center gap-2 rounded border border-orange-500/40 bg-orange-500/10 px-3 py-2 font-mono text-[11px] font-semibold tracking-[-0.05em] text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-50"
+        className={`flex items-center justify-center gap-2 rounded border px-3 py-2 font-mono text-[11px] font-semibold tracking-[-0.05em] transition-colors disabled:opacity-50 ${
+          tab === 'refund'   ? 'border-blue-500/40 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
+          : tab === 'payout'  ? 'border-green-500/40 bg-green-500/10 text-green-400 hover:bg-green-500/20'
+          : tab === 'takeover' ? 'border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+          : 'border-orange-500/40 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20'
+        }`}
       >
         {loading ? <Loader2 size={12} strokeWidth={2} className="animate-spin" /> : <AlertTriangle size={12} strokeWidth={2} />}
-        Execute Resolution
+        {tab === 'refund' ? 'Process Full Refund' : tab === 'payout' ? 'Release Full Payout' : tab === 'takeover' ? 'Relist as Takeover' : 'Execute Split'}
       </button>
     </div>
   )
@@ -168,13 +267,21 @@ function DisputeResolution({ order, onResolved }: { order: Order; onResolved: ()
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialMessages, currentUser }: Props) {
+export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialMessages, currentUser, dmThreads: initialDmThreads }: Props) {
   const router = useRouter()
   const [orders, setOrders]           = useState<Order[]>(initialOrders)
-  const [activeOrder, setActiveOrder] = useState<Order | null>(initialOrder)
+  const [dmThreads, setDmThreads]     = useState<StaffDmThread[]>(initialDmThreads)
+  const [selection, setSelection]     = useState<Selection>(
+    initialOrder ? { kind: 'order', order: initialOrder } : null
+  )
   const [messages, setMessages]       = useState<ChatMessage[]>(initialMessages)
   const [input, setInput]             = useState('')
   const [sending, setSending]         = useState(false)
+  const [sidebarTab, setSidebarTab]   = useState<SidebarTab>(() => {
+    // Accountants can only see DMs; others default to orders when no DMs exist
+    if (initialDmThreads.length > 0 || currentUser.role === 'accountant') return 'dms'
+    return 'orders'
+  })
   const [filterIdx, setFilterIdx]     = useState(0)
   const [search, setSearch]           = useState('')
   const [loadingMsgs, setLoadingMsgs] = useState(false)
@@ -200,17 +307,83 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Active chat messages + Realtime ──
+  // ── Realtime: new DMs arriving for this staff role ──
   useEffect(() => {
-    if (!activeOrder) return
-
     const ch = supabase
-      .channel(`admin:chat:${activeOrder.id}`)
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `order_id=eq.${activeOrder.id}` },
+      .channel(`admin:inbox:dms:${currentUser.role}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `dm_thread_id=like.%25:${currentUser.role}`,
+        },
         async (payload) => {
           const raw = payload.new as ChatMessage
-          // Fetch sender profile to get role
+          if (!raw.dm_thread_id) return
+
+          // Enrich with sender profile so god-mode styling works
+          let msg = raw
+          if (!raw.sender?.role) {
+            const senderProfile = await getSenderProfile(raw.sender_id)
+            if (senderProfile) msg = { ...raw, sender: senderProfile as Profile }
+          }
+
+          // Update active DM messages if this thread is selected
+          setSelection((sel) => {
+            if (sel?.kind === 'dm' && sel.thread.threadId === msg.dm_thread_id) {
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === msg.id)) return prev
+                return [...prev, msg]
+              })
+            }
+            return sel
+          })
+
+          // Update DM threads list: bump or create the thread entry
+          setDmThreads((prev) => {
+            const idx = prev.findIndex((t) => t.threadId === msg.dm_thread_id)
+            if (idx !== -1) {
+              const updated = [...prev]
+              updated[idx] = { ...updated[idx], lastMessage: msg }
+              // Move to top
+              const [item] = updated.splice(idx, 1)
+              return [item, ...updated]
+            }
+            // New thread — create a minimal entry (booster profile will be unknown until reload)
+            const boosterId = (msg.dm_thread_id as string).split(':')[0]
+            return [
+              {
+                threadId: msg.dm_thread_id as string,
+                boosterId,
+                booster: { id: boosterId, username: null, email: boosterId, role: 'booster', avatar_url: null, created_at: '', updated_at: '' } as Profile,
+                lastMessage: msg,
+              },
+              ...prev,
+            ]
+          })
+
+          // Auto-switch sidebar to DMs tab when a new DM arrives
+          setSidebarTab('dms')
+        }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(ch) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.role])
+
+  // ── Active order chat messages + Realtime ──
+  useEffect(() => {
+    if (selection?.kind !== 'order') return
+    const orderId = selection.order.id
+
+    const ch = supabase
+      .channel(`admin:chat:${orderId}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `order_id=eq.${orderId}` },
+        async (payload) => {
+          const raw = payload.new as ChatMessage
           const { data: sender } = await supabase
             .from('profiles')
             .select('id, username, email, role, avatar_url, created_at, updated_at')
@@ -218,6 +391,14 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
             .single()
           setMessages((prev) => {
             if (prev.some((m) => m.id === raw.id)) return prev
+            // Own message echo: swap out the optimistic bubble for the confirmed DB row
+            if (raw.sender_id === currentUser.id) {
+              const optIdx = prev.findIndex((m) => m.id.startsWith('opt-') && m.content === raw.content)
+              if (optIdx !== -1) {
+                return prev.map((m, i) => i === optIdx ? { ...raw, sender: sender ?? undefined } : m)
+              }
+              return prev // already replaced or no opt- found
+            }
             return [...prev, { ...raw, sender: sender ?? undefined }]
           })
         })
@@ -225,10 +406,10 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
 
     return () => { supabase.removeChannel(ch) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeOrder?.id])
+  }, [selection?.kind === 'order' ? (selection as { kind: 'order'; order: Order }).order.id : null])
 
   const loadOrder = useCallback(async (order: Order) => {
-    setActiveOrder(order)
+    setSelection({ kind: 'order', order })
     setLoadingMsgs(true)
     const { data } = await supabase
       .from('chat_messages')
@@ -237,13 +418,27 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
       .order('created_at', { ascending: true })
     setMessages((data as ChatMessage[]) ?? [])
     setLoadingMsgs(false)
-    router.replace(`/dashboard/master-inbox?order=${order.id}`, { scroll: false })
+    router.replace(`/admin/master-inbox?order=${order.id}`, { scroll: false })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const loadDmThread = useCallback(async (thread: StaffDmThread) => {
+    setSelection({ kind: 'dm', thread })
+    setLoadingMsgs(true)
+    const { data } = await supabase
+      .from('chat_messages')
+      .select('*, sender:profiles!chat_messages_sender_id_fkey(id, username, email, role, avatar_url)')
+      .eq('dm_thread_id', thread.threadId)
+      .order('created_at', { ascending: true })
+    setMessages((data as ChatMessage[]) ?? [])
+    setLoadingMsgs(false)
+    router.replace('/admin/master-inbox', { scroll: false })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function handleSend() {
     const text = input.trim()
-    if (!text || !activeOrder || sending) return
+    if (!text || !selection || sending) return
     setSending(true)
     setInput('')
     const optimisticId = `opt-${Date.now()}`
@@ -251,7 +446,8 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
       ...prev,
       {
         id: optimisticId,
-        order_id: activeOrder.id,
+        order_id: selection.kind === 'order' ? selection.order.id : null,
+        dm_thread_id: selection.kind === 'dm' ? selection.thread.threadId : null,
         sender_id: currentUser.id,
         content: text,
         image_url: null,
@@ -261,9 +457,19 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
         sender: { id: currentUser.id, role: currentUser.role } as Profile,
       },
     ])
-    const { error } = await sendAdminMessage(activeOrder.id, text)
+
+    let error: string | undefined
+    if (selection.kind === 'order') {
+      const res = await sendAdminMessage(selection.order.id, text)
+      error = res.error
+    } else {
+      const res = await sendAdminDmReply(selection.thread.threadId, text)
+      error = res.error
+    }
+
     if (error) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId))
+      setInput(text)
     }
     setSending(false)
   }
@@ -281,92 +487,212 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
     return statusOk && searchOk
   })
 
+  const activeOrder  = selection?.kind === 'order' ? selection.order : null
+  const activeThread = selection?.kind === 'dm'    ? selection.thread : null
+  const isAccountant = currentUser.role === 'accountant'
+
   const isAdminRole = (role?: string) => ['admin', 'support', 'accountant'].includes(role ?? '')
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-[#1a1a1a] bg-[#0a0a0a]">
 
-      {/* ── Order sidebar ──────────────────────────────────────── */}
+      {/* ── Sidebar ──────────────────────────────────────────────────── */}
       <div className="flex w-[300px] shrink-0 flex-col border-r border-[#151515]">
-        {/* Header + search */}
-        <div className="shrink-0 border-b border-[#151515] px-4 py-3.5">
-          <p className="font-mono text-[11px] font-semibold tracking-[-0.06em] text-white mb-2">
-            All Orders <span className="text-[#4a4a4a]">({orders.length})</span>
-          </p>
-          <div className="flex items-center gap-2 rounded-md border border-[#1e1e1e] bg-[#0f0f0f] px-2.5 py-1.5">
-            <Search size={11} strokeWidth={1.5} className="text-[#4a4a4a] shrink-0" />
-            <input
-              value={search} onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search orders..."
-              className="flex-1 bg-transparent font-mono text-[10px] tracking-[-0.04em] text-white placeholder-[#3a3a3a] outline-none"
-            />
-          </div>
-        </div>
 
-        {/* Filter tabs */}
-        <div className="shrink-0 flex gap-1 border-b border-[#151515] px-3 py-2 overflow-x-auto">
-          {FILTERS.map((f, i) => (
+        {/* Tab switcher — accountants only see DMs */}
+        <div className="shrink-0 flex border-b border-[#151515]">
+          <button
+            onClick={() => setSidebarTab('dms')}
+            className={`flex-1 py-3 font-mono text-[10px] tracking-[-0.04em] transition-colors relative ${
+              sidebarTab === 'dms' ? 'text-white' : 'text-[#4a4a4a] hover:text-[#9a9a9a]'
+            }`}
+          >
+            Direct Messages
+            {dmThreads.length > 0 && (
+              <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-blue-500/20 px-1 font-mono text-[8px] text-blue-400">
+                {dmThreads.length}
+              </span>
+            )}
+            {sidebarTab === 'dms' && (
+              <span className="absolute bottom-0 left-0 right-0 h-px bg-white/20" />
+            )}
+          </button>
+          {!isAccountant && (
             <button
-              key={f.label}
-              onClick={() => setFilterIdx(i)}
-              className={`shrink-0 rounded px-2 py-0.5 font-mono text-[9px] tracking-[-0.03em] transition-colors ${
-                filterIdx === i
-                  ? 'bg-white/10 text-white'
-                  : 'text-[#4a4a4a] hover:text-[#9a9a9a]'
+              onClick={() => setSidebarTab('orders')}
+              className={`flex-1 py-3 font-mono text-[10px] tracking-[-0.04em] transition-colors relative ${
+                sidebarTab === 'orders' ? 'text-white' : 'text-[#4a4a4a] hover:text-[#9a9a9a]'
               }`}
             >
-              {f.label}
+              Order Interventions
+              {sidebarTab === 'orders' && (
+                <span className="absolute bottom-0 left-0 right-0 h-px bg-white/20" />
+              )}
             </button>
-          ))}
+          )}
         </div>
 
-        {/* Order list */}
-        <div className="flex-1 overflow-y-auto">
-          {filtered.map((order) => {
-            const gameIcon = GAME_ICONS[order.game?.name ?? '']
-            const title    = orderTitle(order)
-            const isActive = activeOrder?.id === order.id
-            return (
-              <button
-                key={order.id}
-                onClick={() => loadOrder(order)}
-                className={`w-full text-left px-4 py-3 border-b border-[#0f0f0f] transition-colors ${
-                  isActive ? 'bg-[#1a1a1a] border-l-2 border-l-white/20' : 'hover:bg-[#111]'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  {gameIcon && (
-                    <Image src={gameIcon} alt="" width={14} height={14}
-                      className="h-3.5 w-3.5 rounded-sm shrink-0 object-cover" />
-                  )}
-                  <p className="font-mono text-[10px] font-semibold tracking-[-0.06em] text-white truncate flex-1">
-                    {title}
-                  </p>
-                  <span className={`shrink-0 inline-flex items-center rounded border px-1 py-px font-mono text-[7px] tracking-[-0.02em] ${STATUS_CLS[order.status] ?? STATUS_CLS.pending}`}>
-                    {STATUS_LABEL[order.status]}
-                  </span>
-                </div>
-                <p className="font-mono text-[9px] tracking-[-0.04em] text-[#4a4a4a] truncate">
-                  {order.client?.username ?? order.client?.email ?? '—'} · #{order.id.slice(0, 8).toUpperCase()}
+        {/* ── DM Tab ── */}
+        {sidebarTab === 'dms' && (
+          <div className="flex-1 overflow-y-auto">
+            {dmThreads.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+                <MessageSquare size={20} strokeWidth={1.3} className="text-[#2a2a2a]" />
+                <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a]">
+                  No direct messages yet
                 </p>
-              </button>
-            )
-          })}
-        </div>
+                <p className="font-mono text-[9px] tracking-[-0.03em] text-[#2a2a2a] leading-relaxed">
+                  When boosters message your role&apos;s channel, threads appear here.
+                </p>
+              </div>
+            ) : (
+              dmThreads.map((thread) => {
+                const isActive   = activeThread?.threadId === thread.threadId
+                const name       = thread.booster.username ?? thread.booster.email ?? '—'
+                const initial    = name.charAt(0).toUpperCase()
+                const last       = thread.lastMessage
+                const isFromStaff = last.sender_id !== thread.boosterId
+                // channel suffix e.g. "admin" → role icon
+                const channelSuffix = thread.threadId.split(':')[1]
+                const ChannelIcon   = channelSuffix === 'admin' ? Shield
+                  : channelSuffix === 'support' ? Headphones : Briefcase
+
+                return (
+                  <div
+                    key={thread.threadId}
+                    className={`group relative border-b border-[#0f0f0f] transition-colors ${
+                      isActive ? 'bg-[#1a1a1a] border-l-2 border-l-blue-400/40' : 'hover:bg-[#111]'
+                    }`}
+                  >
+                    <button
+                      onClick={() => loadDmThread(thread)}
+                      className="w-full text-left px-4 py-3 pr-10"
+                    >
+                      <div className="flex items-center gap-2.5 mb-1">
+                        {/* Avatar */}
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#2a2a2a] font-mono text-[10px] font-bold text-[#c8c8c8]">
+                          {initial}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <p className="font-mono text-[11px] font-semibold tracking-[-0.06em] text-white truncate">
+                              {name}
+                            </p>
+                            <ChannelIcon size={8} strokeWidth={2} className="shrink-0 text-[#4a4a4a]" />
+                            <span className="font-mono text-[8px] tracking-[-0.02em] text-[#3a3a3a] shrink-0">
+                              {channelSuffix}
+                            </span>
+                          </div>
+                          <p className="font-mono text-[9px] tracking-[-0.04em] text-[#4a4a4a] truncate">
+                            {isFromStaff ? 'You: ' : ''}{last.content}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-mono text-[9px] tracking-[-0.03em] text-[#3a3a3a]">
+                          {new Date(last.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        await deleteStaffDmThread(thread.threadId)
+                        setDmThreads((prev) => prev.filter((t) => t.threadId !== thread.threadId))
+                        if (isActive) setSelection(null)
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-[#3a3a3a] hover:text-red-400"
+                      title="Delete conversation"
+                    >
+                      <Trash2 size={11} strokeWidth={1.5} />
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        )}
+
+        {/* ── Orders Tab ── */}
+        {sidebarTab === 'orders' && (
+          <>
+            {/* Header + search */}
+            <div className="shrink-0 border-b border-[#151515] px-4 py-3.5">
+              <p className="font-mono text-[11px] font-semibold tracking-[-0.06em] text-white mb-2">
+                All Orders <span className="text-[#4a4a4a]">({orders.length})</span>
+              </p>
+              <div className="flex items-center gap-2 rounded-md border border-[#1e1e1e] bg-[#0f0f0f] px-2.5 py-1.5">
+                <Search size={11} strokeWidth={1.5} className="text-[#4a4a4a] shrink-0" />
+                <input
+                  value={search} onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search orders..."
+                  className="flex-1 bg-transparent font-mono text-[10px] tracking-[-0.04em] text-white placeholder-[#3a3a3a] outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Filter tabs */}
+            <div className="shrink-0 flex gap-1 border-b border-[#151515] px-3 py-2 overflow-x-auto">
+              {FILTERS.map((f, i) => (
+                <button
+                  key={f.label}
+                  onClick={() => setFilterIdx(i)}
+                  className={`shrink-0 rounded px-2 py-0.5 font-mono text-[9px] tracking-[-0.03em] transition-colors ${
+                    filterIdx === i ? 'bg-white/10 text-white' : 'text-[#4a4a4a] hover:text-[#9a9a9a]'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Order list */}
+            <div className="flex-1 overflow-y-auto">
+              {filtered.map((order) => {
+                const gameIcon = GAME_ICONS[order.game?.name ?? '']
+                const title    = orderTitle(order)
+                const isActive = activeOrder?.id === order.id
+                return (
+                  <button
+                    key={order.id}
+                    onClick={() => loadOrder(order)}
+                    className={`w-full text-left px-4 py-3 border-b border-[#0f0f0f] transition-colors ${
+                      isActive ? 'bg-[#1a1a1a] border-l-2 border-l-white/20' : 'hover:bg-[#111]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      {gameIcon && (
+                        <Image src={gameIcon} alt="" width={14} height={14}
+                          className="h-3.5 w-3.5 rounded-sm shrink-0 object-cover" />
+                      )}
+                      <p className="font-mono text-[10px] font-semibold tracking-[-0.06em] text-white truncate flex-1">
+                        {title}
+                      </p>
+                      <span className={`shrink-0 inline-flex items-center rounded border px-1 py-px font-mono text-[7px] tracking-[-0.02em] ${STATUS_CLS[order.status] ?? STATUS_CLS.pending}`}>
+                        {STATUS_LABEL[order.status]}
+                      </span>
+                    </div>
+                    <p className="font-mono text-[9px] tracking-[-0.04em] text-[#4a4a4a] truncate">
+                      {order.client?.username ?? order.client?.email ?? '—'} · #{order.id.slice(0, 8).toUpperCase()}
+                    </p>
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Chat panel ────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
 
-        {!activeOrder ? (
+        {!selection ? (
           <div className="flex flex-1 items-center justify-center">
             <div className="flex flex-col items-center gap-3 text-center px-8">
               <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[#2a2a2a] bg-[#111]">
                 <Shield size={20} strokeWidth={1.5} className="text-red-400" />
               </div>
-              <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white">Select an order</p>
-              <p className="font-mono text-[11px] tracking-[-0.05em] text-[#4a4a4a] max-w-[200px] leading-relaxed">
-                Click any order from the sidebar to open god-mode chat access.
+              <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white">Select a conversation</p>
+              <p className="font-mono text-[11px] tracking-[-0.05em] text-[#4a4a4a] max-w-[220px] leading-relaxed">
+                Pick a direct message or an order from the sidebar.
               </p>
             </div>
           </div>
@@ -374,11 +700,39 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
           <>
             {/* Chat Header */}
             <div className="shrink-0 flex items-center gap-3 border-b border-[#1a1a1a] px-5 py-3.5">
-              {(() => {
-                const gameIcon = GAME_ICONS[activeOrder.game?.name ?? '']
-                const title    = orderTitle(activeOrder)
-                const badgeCls = STATUS_CLS[activeOrder.status] ?? STATUS_CLS.pending
-                const badgeLbl = STATUS_LABEL[activeOrder.status] ?? activeOrder.status
+              {selection.kind === 'dm' ? (() => {
+                const thread = selection.thread
+                const name   = thread.booster.username ?? thread.booster.email ?? '—'
+                const suffix = thread.threadId.split(':')[1]
+                const ChannelIcon = suffix === 'admin' ? Shield : suffix === 'support' ? Headphones : Briefcase
+                return (
+                  <>
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#2a2a2a] font-mono text-xs font-bold text-white">
+                      {name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white truncate">{name}</p>
+                      <p className="font-mono text-[10px] tracking-[-0.05em] text-[#6e6d6f] flex items-center gap-1">
+                        <ChannelIcon size={9} strokeWidth={2} />
+                        Direct message via {suffix} channel
+                      </p>
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 font-mono text-[9px] tracking-[-0.02em] text-blue-400">
+                      <MessageSquare size={8} strokeWidth={2} />
+                      DM
+                    </span>
+                    <span className="inline-flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-mono text-[9px] tracking-[-0.02em] text-red-400">
+                      <Shield size={8} strokeWidth={2} />
+                      GOD MODE
+                    </span>
+                  </>
+                )
+              })() : (() => {
+                const order    = selection.order
+                const gameIcon = GAME_ICONS[order.game?.name ?? '']
+                const title    = orderTitle(order)
+                const badgeCls = STATUS_CLS[order.status] ?? STATUS_CLS.pending
+                const badgeLbl = STATUS_LABEL[order.status] ?? order.status
                 return (
                   <>
                     {gameIcon
@@ -389,15 +743,14 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
                     <div className="min-w-0 flex-1">
                       <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white truncate">{title}</p>
                       <p className="font-mono text-[10px] tracking-[-0.05em] text-[#6e6d6f] truncate">
-                        {activeOrder.game?.name} · #{activeOrder.id.slice(0, 8).toUpperCase()}
-                        {' · '}Client: {activeOrder.client?.username ?? activeOrder.client?.email ?? '—'}
+                        {order.game?.name} · #{order.id.slice(0, 8).toUpperCase()}
+                        {' · '}Client: {order.client?.username ?? order.client?.email ?? '—'}
                       </p>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <span className={`inline-flex items-center rounded border px-2 py-0.5 font-mono text-[9px] tracking-[-0.02em] ${badgeCls}`}>
                         {badgeLbl}
                       </span>
-                      {/* God-mode badge */}
                       <span className="inline-flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-mono text-[9px] tracking-[-0.02em] text-red-400">
                         <Shield size={8} strokeWidth={2} />
                         GOD MODE
@@ -439,12 +792,18 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
                             {/* Sender label */}
                             <div className="flex items-center gap-2">
                               {!isOwn && (
-                                <span className={`font-mono text-[10px] tracking-[-0.05em] ${isAdminMsg ? 'text-yellow-400 font-semibold' : 'text-[#6e6d6f]'}`}>
+                                <span className={`font-mono text-[10px] tracking-[-0.05em] ${
+                                  isAdminMsg
+                                    ? senderRole === 'admin' ? 'text-red-400 font-semibold' : 'text-yellow-400 font-semibold'
+                                    : 'text-[#6e6d6f]'
+                                }`}>
                                   {adminLabel ? `${adminLabel} ${senderName}` : senderName}
                                 </span>
                               )}
                               {isOwn && adminLabel && (
-                                <span className="font-mono text-[10px] tracking-[-0.05em] text-yellow-400 font-semibold">
+                                <span className={`font-mono text-[10px] tracking-[-0.05em] font-semibold ${
+                                  senderRole === 'admin' ? 'text-red-400' : 'text-yellow-400'
+                                }`}>
                                   {adminLabel} You
                                 </span>
                               )}
@@ -455,9 +814,13 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
                             {/* Bubble */}
                             <div className={`relative max-w-[70%] rounded-md px-3.5 py-2.5 font-mono text-xs tracking-[-0.05em] leading-relaxed ${
                               isAdminMsg
-                                ? isOwn
-                                  ? 'bg-yellow-500/10 border border-yellow-500/40 text-yellow-100 shadow-[0_0_12px_rgba(234,179,8,0.15)] rounded-br-none'
-                                  : 'bg-yellow-500/5 border border-yellow-500/30 text-yellow-200 shadow-[0_0_8px_rgba(234,179,8,0.1)] rounded-bl-none'
+                                ? senderRole === 'admin'
+                                  ? isOwn
+                                    ? 'bg-red-500/10 border border-red-500/40 text-red-100 shadow-[0_0_12px_rgba(239,68,68,0.15)] rounded-br-none'
+                                    : 'bg-red-500/5 border border-red-500/30 text-red-200 shadow-[0_0_8px_rgba(239,68,68,0.1)] rounded-bl-none'
+                                  : isOwn
+                                    ? 'bg-yellow-500/10 border border-yellow-500/40 text-yellow-100 shadow-[0_0_12px_rgba(234,179,8,0.15)] rounded-br-none'
+                                    : 'bg-yellow-500/5 border border-yellow-500/30 text-yellow-200 shadow-[0_0_8px_rgba(234,179,8,0.1)] rounded-bl-none'
                                 : isOwn
                                   ? 'bg-white text-black rounded-br-none'
                                   : 'bg-[#1e1e1e] text-[#e8e8e8] rounded-bl-none'
@@ -465,10 +828,12 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
                               {isAdminMsg && (
                                 <div className={`flex items-center gap-1 mb-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                                   {senderRole === 'admin'
-                                    ? <Shield size={9} strokeWidth={2} className="text-yellow-400" />
+                                    ? <Shield size={9} strokeWidth={2} className="text-red-400" />
                                     : <Headphones size={9} strokeWidth={2} className="text-yellow-400" />
                                   }
-                                  <span className="font-mono text-[8px] tracking-[0.02em] text-yellow-400 font-semibold uppercase">
+                                  <span className={`font-mono text-[8px] tracking-[0.02em] font-semibold uppercase ${
+                                    senderRole === 'admin' ? 'text-red-400' : 'text-yellow-400'
+                                  }`}>
                                     {senderRole}
                                   </span>
                                 </div>
@@ -508,28 +873,82 @@ export function AdminMasterInbox({ orders: initialOrders, initialOrder, initialM
                 </div>
               </div>
 
-              {/* Dispute Resolution sidebar (dispute/support orders only) */}
-              {(activeOrder.status === 'dispute' || activeOrder.status === 'support') && (
-                <div className="w-[260px] shrink-0 border-l border-[#1a1a1a] overflow-y-auto p-4 flex flex-col gap-4">
-                  <DisputeResolution
-                    order={activeOrder}
-                    onResolved={() => setActiveOrder((o) => o ? { ...o, status: 'completed' } : o)}
-                  />
-                  {/* Order summary snippet */}
+              {/* Order Details + Actions — always shown when order is selected */}
+              {activeOrder && (
+                <div className="w-[280px] shrink-0 border-l border-[#1a1a1a] overflow-y-auto p-4 flex flex-col gap-4">
+
+                  {/* Order Info */}
                   <div className="rounded-lg border border-[#1e1e1e] bg-[#111] p-3 flex flex-col gap-2">
                     <p className="font-mono text-[10px] font-semibold tracking-[-0.06em] text-[#c8c8c8] mb-1">Order Info</p>
-                    {[
+                    {([
                       ['Client',  activeOrder.client?.username ?? activeOrder.client?.email ?? '—'],
                       ['Booster', activeOrder.booster?.username ?? activeOrder.booster?.email ?? 'Unassigned'],
-                      ['Price',   `$${activeOrder.price.toFixed(2)}`],
                       ['Game',    activeOrder.game?.name ?? '—'],
-                    ].map(([k, v]) => (
-                      <div key={k} className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em]">{k}</span>
-                        <span className="font-mono text-[9px] text-[#c8c8c8] tracking-[-0.03em] truncate">{v}</span>
+                      ['Service', activeOrder.service?.label ?? '—'],
+                      ['Status',  activeOrder.status],
+                      ['Created', new Date(activeOrder.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })],
+                    ] as [string, string][]).map(([k, v]) => (
+                      <div key={k} className="flex items-start justify-between gap-2">
+                        <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em] shrink-0">{k}</span>
+                        <span className="font-mono text-[9px] text-[#c8c8c8] tracking-[-0.03em] text-right break-all">{v}</span>
                       </div>
                     ))}
                   </div>
+
+                  {/* Boost Details from order.details JSON */}
+                  {(() => {
+                    const d = (activeOrder.details ?? {}) as Record<string, unknown>
+                    const rows: [string, string][] = []
+                    if (d.current_rank) rows.push(['From Rank', String(d.current_rank)])
+                    if (d.target_rank)  rows.push(['To Rank',   String(d.target_rank)])
+                    if (d.server)       rows.push(['Region',    String(d.server)])
+                    if (d.queue)        rows.push(['Queue',     String(d.queue)])
+                    if (d.wins !== undefined) rows.push(['Wins', String(d.wins)])
+                    if (!rows.length) return null
+                    return (
+                      <div className="rounded-lg border border-[#1e1e1e] bg-[#111] p-3 flex flex-col gap-2">
+                        <p className="font-mono text-[10px] font-semibold tracking-[-0.06em] text-[#c8c8c8] mb-1">Boost Details</p>
+                        {rows.map(([k, v]) => (
+                          <div key={k} className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em] shrink-0">{k}</span>
+                            <span className="font-mono text-[9px] text-[#c8c8c8] tracking-[-0.03em] truncate max-w-[140px]">{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
+
+                  {/* Financial Breakdown */}
+                  {(() => {
+                    const { grossPrice, platformFee, boosterPayout } = calculateBoosterPayout(activeOrder.price)
+                    return (
+                      <div className="rounded-lg border border-[#1e1e1e] bg-[#111] p-3 flex flex-col gap-2">
+                        <p className="font-mono text-[10px] font-semibold tracking-[-0.06em] text-[#c8c8c8] mb-1">Financials</p>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em]">Gross (Client Paid)</span>
+                          <span className="font-mono text-[9px] text-white font-semibold">${grossPrice.toFixed(2)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em]">Booster Net Cut</span>
+                          <span className="font-mono text-[9px] text-green-400 font-semibold">${boosterPayout.toFixed(2)}</span>
+                        </div>
+                        <div className="h-px bg-[#1e1e1e] my-0.5" />
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[9px] text-[#4a4a4a] tracking-[-0.03em]">Platform Profit</span>
+                          <span className="font-mono text-[9px] text-yellow-400 font-semibold">${platformFee.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* Dispute Resolution Engine — dispute/support orders only */}
+                  {(activeOrder.status === 'dispute' || activeOrder.status === 'support') && (
+                    <DisputeResolutionEngine
+                      order={activeOrder}
+                      onResolved={() => setSelection((sel) => sel?.kind === 'order' ? { kind: 'order', order: { ...sel.order, status: 'completed' } } : sel)}
+                    />
+                  )}
+
                 </div>
               )}
             </div>

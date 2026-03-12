@@ -3,8 +3,9 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const ROLE_HOME: Record<string, string> = {
   booster: '/dashboard',
-  support: '/dashboard/master-inbox',
-  admin:   '/dashboard/radar',
+  support: '/admin',
+  admin:   '/admin',
+  accountant: '/admin/withdrawals',
   client:  '/',
 }
 

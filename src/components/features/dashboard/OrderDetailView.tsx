@@ -14,10 +14,11 @@ import {
 import { GAME_ICONS } from '@/lib/config/game-icons'
 import type { ChatMessage as DBChatMessage, Order } from '@/types'
 import { createClient } from '@/lib/supabase/client'
-import { saveLoginsAction, deleteLoginsAction, updateOrderProgress, updateOrderActivity, executeOrderAction } from '@/lib/actions/orders'
-import { sendMessage as sendMessageAction, sendSystemMessage } from '@/lib/actions/chat'
+import { saveLoginsAction, deleteLoginsAction, updateOrderProgress, updateOrderActivity, executeOrderAction, approveAndReleaseAction, boosterMarkCompleteWithProof } from '@/lib/actions/orders'
+import { sendMessage as sendMessageAction, sendSystemMessage, getSenderProfile } from '@/lib/actions/chat'
 import { SystemMessageDivider, SYS_COLOR_MAP } from '@/components/features/dashboard/ChatPanel'
 import { notifyRankUpdate } from '@/lib/actions/notifications'
+import { calculateBoosterPayout } from '@/lib/payout'
 
 // ─── Valorant tiers (shared) ──────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ function ranksInRange(startLabel: string, endLabel: string): RankOption[] {
 // ─── Display types ────────────────────────────────────────────────────────────
 
 type PaymentStatus = 'Unpaid' | 'Processing' | 'Paid' | 'Refunded' | 'Partially Refunded'
-type CompletionStatus = 'Waiting' | 'In Progress' | 'Completed' | 'Canceled' | 'Disputed' | 'Support Called' | 'Need Action'
+type CompletionStatus = 'Waiting' | 'In Progress' | 'Completed' | 'Canceled' | 'Disputed' | 'Support Called' | 'Need Action' | 'Waiting Approval' | 'Cancel Requested'
 type BoosterStatus = 'Online' | 'Offline' | 'Waiting'
 
 const PAYMENT_BADGE: Record<PaymentStatus, string> = {
@@ -78,8 +79,10 @@ const COMPLETION_BADGE: Record<CompletionStatus, string> = {
   'Completed':   'border border-green-500/40 text-green-400 bg-green-500/10',
   'Canceled':      'border border-red-500/40 text-red-400 bg-red-500/10',
   'Disputed':      'border border-orange-500/40 text-orange-400 bg-orange-500/10',
-  'Support Called':'border border-blue-500/40 text-blue-400 bg-blue-500/10',
-  'Need Action':   'border border-purple-500/40 text-purple-400 bg-purple-500/10',
+  'Support Called':   'border border-blue-500/40 text-blue-400 bg-blue-500/10',
+  'Need Action':       'border border-purple-500/40 text-purple-400 bg-purple-500/10',
+  'Waiting Approval':  'border border-yellow-500/40 text-yellow-400 bg-yellow-500/10',
+  'Cancel Requested':  'border border-red-500/40 text-red-400 bg-red-500/10',
 }
 
 // ─── Derive display values from real Order ────────────────────────────────────
@@ -103,11 +106,13 @@ function deriveDisplay(order: Order) {
     pending: 'Unpaid', awaiting_payment: 'Unpaid',
     in_progress: 'Paid', completed: 'Paid',
     cancelled: 'Refunded', dispute: 'Paid',
+    waiting_action: 'Paid', cancel_requested: 'Paid',
   }
   const statusToCompletion: Record<string, CompletionStatus> = {
     pending: 'Waiting', awaiting_payment: 'Waiting',
     in_progress: 'In Progress', completed: 'Completed',
     cancelled: 'Canceled', dispute: 'Disputed', support: 'Support Called',
+    waiting_action: 'Waiting Approval', cancel_requested: 'Cancel Requested',
   }
 
   const title =
@@ -213,11 +218,12 @@ interface ConfirmModalProps {
   description: string
   confirmLabel?: string
   danger?: boolean
-  onConfirm: () => void
+  isLoading?: boolean
+  onConfirm: () => void | Promise<void>
   onCancel: () => void
 }
 
-function ConfirmModal({ title, description, confirmLabel = 'Confirm', danger = false, onConfirm, onCancel }: ConfirmModalProps) {
+function ConfirmModal({ title, description, confirmLabel = 'Confirm', danger = false, isLoading = false, onConfirm, onCancel }: ConfirmModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
@@ -243,13 +249,133 @@ function ConfirmModal({ title, description, confirmLabel = 'Confirm', danger = f
           </button>
           <button
             onClick={onConfirm}
-            className={`flex h-[40px] flex-1 items-center justify-center rounded-md font-mono text-xs font-semibold tracking-[-0.07em] transition-colors ${
+            disabled={isLoading}
+            className={`flex h-[40px] flex-1 items-center justify-center gap-2 rounded-md font-mono text-xs font-semibold tracking-[-0.07em] transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
               danger
                 ? 'bg-red-500 text-white hover:bg-red-400'
                 : 'bg-white text-black hover:bg-white/90'
             }`}
           >
+            {isLoading && <Loader2 size={13} strokeWidth={2} className="animate-spin" />}
             {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Proof Upload Modal ───────────────────────────────────────────────────────
+
+interface ProofUploadModalProps {
+  orderId: string
+  onCancel: () => void
+  onSuccess: () => void
+  onActivityReset: () => void
+}
+
+function ProofUploadModal({ orderId, onCancel, onSuccess, onActivityReset }: ProofUploadModalProps) {
+  const [file, setFile]               = useState<File | null>(null)
+  const [preview, setPreview]         = useState<string | null>(null)
+  const [uploading, setUploading]     = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const proofFileRef                  = useRef<HTMLInputElement>(null)
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (!f) return
+    if (!f.type.startsWith('image/')) { setUploadError('Only image files are accepted.'); return }
+    if (f.size > 10 * 1024 * 1024)   { setUploadError('File must be under 10 MB.'); return }
+    setUploadError(null)
+    setFile(f)
+    setPreview(URL.createObjectURL(f))
+  }
+
+  async function handleSubmit() {
+    if (!file) return
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const fd = new FormData()
+      fd.append('orderId', orderId)
+      fd.append('file', file)
+      const result = await boosterMarkCompleteWithProof(fd)
+      if (result?.error) throw new Error(result.error)
+      onActivityReset()
+      onSuccess()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed. Please try again.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={!uploading ? onCancel : undefined} />
+      <div className="relative z-10 w-full max-w-[440px] mx-4 rounded-md border border-[#2a2a2a] bg-[#111]">
+        <div className="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-[#2a2a2a]">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/10">
+            <CheckCircle2 size={15} strokeWidth={1.5} className="text-green-400" />
+          </div>
+          <div>
+            <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white">Mark Order as Complete</p>
+            <p className="mt-1 font-mono text-[11px] leading-snug tracking-[-0.05em] text-[#6e6d6f]">
+              Upload a screenshot of the final rank or match result as proof of completion.
+            </p>
+          </div>
+          {!uploading && (
+            <button onClick={onCancel} className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6e6d6f] transition-colors hover:text-white">
+              <X size={14} strokeWidth={1.5} />
+            </button>
+          )}
+        </div>
+
+        <div className="px-5 py-4">
+          <input ref={proofFileRef} type="file" accept="image/*" className="hidden" onChange={handleFileSelect} />
+          {preview ? (
+            <div className="relative">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={preview} alt="Proof preview" className="w-full max-h-48 rounded-md object-cover border border-[#2a2a2a]" />
+              {!uploading && (
+                <button
+                  onClick={() => { setFile(null); setPreview(null) }}
+                  className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+                >
+                  <X size={12} strokeWidth={1.5} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => proofFileRef.current?.click()}
+              className="flex w-full h-28 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-[#2a2a2a] bg-[#0a0a0a] text-[#6e6d6f] transition-colors hover:border-[#4a4a4a] hover:text-white"
+            >
+              <ImagePlus size={20} strokeWidth={1.5} />
+              <span className="font-mono text-[11px] tracking-[-0.05em]">Click to select a screenshot</span>
+              <span className="font-mono text-[10px] tracking-[-0.05em] text-[#4a4a4a]">PNG, JPG, WEBP · max 10 MB</span>
+            </button>
+          )}
+          {uploadError && (
+            <p className="mt-2 font-mono text-[11px] tracking-[-0.05em] text-red-400">{uploadError}</p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 px-5 pb-5">
+          <button
+            onClick={onCancel}
+            disabled={uploading}
+            className="flex h-[40px] flex-1 items-center justify-center rounded-md border border-[#2a2a2a] font-mono text-xs tracking-[-0.07em] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!file || uploading}
+            className="flex h-[40px] flex-1 items-center justify-center gap-2 rounded-md bg-white font-mono text-xs font-semibold tracking-[-0.07em] text-black transition-colors hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {uploading && <Loader2 size={13} strokeWidth={2} className="animate-spin" />}
+            {uploading ? 'Uploading…' : 'Submit & Mark Complete'}
           </button>
         </div>
       </div>
@@ -340,7 +466,7 @@ function AddLoginsModal({ gameName, orderTitle, serviceLabel, gameIcon, onClose,
 
 interface LocalMsg {
   id: string
-  sender: 'client' | 'booster' | 'system'
+  sender: 'client' | 'booster' | 'system' | 'admin' | 'support' | 'accountant'
   text?: string
   imageUrl?: string
   time: string
@@ -349,6 +475,9 @@ interface LocalMsg {
   systemColor?: 'orange' | 'blue' | 'red' | 'green'
   is_read?: boolean
 }
+
+const STAFF_ROLES = ['admin', 'support', 'accountant'] as const
+type StaffRole = typeof STAFF_ROLES[number]
 
 const MOCK_MESSAGES: LocalMsg[] = [
   { id: '1', sender: 'system',  text: 'Order started. Booster has been assigned.',  time: '10:01 AM' },
@@ -392,7 +521,7 @@ async function compressImage(file: File): Promise<string | null> {
 
 // ─── Chat View ────────────────────────────────────────────────────────────────
 
-type ConfirmAction = 'mark_completed' | 'booster_mark_complete' | 'open_dispute' | 'need_support' | 'cancel_request' | null
+type ConfirmAction = 'mark_completed' | 'open_dispute' | 'need_support' | 'cancel_request' | 'approve_release' | null
 
 interface ActivityLogEvent {
   label: string
@@ -444,7 +573,11 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
       }
       return { id: msg.id, sender: 'system', text, time, systemType: msg.system_type ?? undefined }
     }
-    const sender: 'client' | 'booster' = msg.sender_id === order.client_id ? 'client' : 'booster'
+    // Staff role (admin/support/accountant) takes priority over the client/booster ID check
+    const rawRole = msg.sender?.role as string | undefined
+    const sender: LocalMsg['sender'] = (rawRole && (STAFF_ROLES as readonly string[]).includes(rawRole))
+      ? (rawRole as StaffRole)
+      : msg.sender_id === order.client_id ? 'client' : 'booster'
     if (msg.image_url) return { id: msg.id, sender, imageUrl: msg.image_url, time, is_read: msg.is_read ?? false }
     return { id: msg.id, sender, text: msg.content, time, is_read: msg.is_read ?? false }
   }
@@ -463,6 +596,8 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
   const [input, setInput]         = useState('')
   const [kebabOpen, setKebabOpen] = useState(false)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null)
+  const [isActionPending, setIsActionPending] = useState(false)
+  const [proofUploadOpen, setProofUploadOpen] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ url: string; senderName: string; time: string } | null>(null)
 
@@ -487,14 +622,18 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
   const syncChannelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null)
 
   // ── Derived: chat lock + dynamic order status badge ──────────────────────────
-  const isChatLocked = ['dispute', 'cancelled', 'completed'].includes(order.status)
+  const isChatLocked   = ['dispute', 'cancelled', 'completed', 'cancel_requested'].includes(order.status)
+  // Actions locked: order has reached a terminal/review state — buttons become disabled
+  const isOrderLocked  = ['dispute', 'cancel_requested', 'completed', 'cancelled'].includes(order.status)
   const ORDER_STATUS_BADGE: Record<string, { cls: string; label: string }> = {
-    in_progress: { cls: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', label: 'In Progress'      },
-    completed:   { cls: 'border-green-500/30  bg-green-500/10  text-green-400',  label: 'Completed'        },
-    dispute:     { cls: 'border-orange-500/30 bg-orange-500/10 text-orange-400', label: 'Dispute Opened'   },
-    support:     { cls: 'border-blue-500/30   bg-blue-500/10   text-blue-400',   label: 'Support Called'   },
-    cancelled:   { cls: 'border-red-500/30    bg-red-500/10    text-red-400',    label: 'Cancel Requested' },
-    pending:     { cls: 'border-gray-500/30   bg-gray-500/10   text-gray-400',   label: 'Pending'          },
+    in_progress:      { cls: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', label: 'In Progress'      },
+    completed:        { cls: 'border-green-500/30  bg-green-500/10  text-green-400',  label: 'Completed'        },
+    dispute:          { cls: 'border-orange-500/30 bg-orange-500/10 text-orange-400', label: 'Dispute Opened'   },
+    support:          { cls: 'border-blue-500/30   bg-blue-500/10   text-blue-400',   label: 'Support Called'   },
+    cancelled:        { cls: 'border-red-500/30    bg-red-500/10    text-red-400',    label: 'Cancelled'        },
+    pending:          { cls: 'border-gray-500/30   bg-gray-500/10   text-gray-400',   label: 'Pending'          },
+    waiting_action:   { cls: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', label: 'Waiting Approval' },
+    cancel_requested: { cls: 'border-red-500/30    bg-red-500/10    text-red-400',    label: 'Cancel Requested' },
   }
   const statusBadgeEntry = ORDER_STATUS_BADGE[order.status] ?? ORDER_STATUS_BADGE.in_progress
 
@@ -529,19 +668,26 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `order_id=eq.${order.id}` },
-        (payload) => {
+        async (payload) => {
           const raw = payload.new as DBChatMessage
           console.log('[ChatView][Realtime] New message received:', raw.id, 'from:', raw.sender_id)
 
-          setMessagesSync(prev => {
-            if (prev.some(m => m.id === raw.id)) return prev // already in state
+          // Dedup guard (fast check before any async work)
+          if (messagesRef.current.some(m => m.id === raw.id)) return
 
-            // System messages always append — they have no opt- counterpart in local state.
-            if (raw.is_system) return [...prev, dbToLocal(raw)]
+          // System messages — synchronous append, no profile needed
+          if (raw.is_system) {
+            setMessagesSync(prev => {
+              if (prev.some(m => m.id === raw.id)) return prev
+              return [...prev, dbToLocal(raw)]
+            })
+            return
+          }
 
-            if (raw.sender_id === currentUserId) {
-              // Own message echo from Realtime — swap the opt- bubble out for the confirmed DB row.
-              // If the ref is still set, use it directly; otherwise find the opt- entry by content.
+          // Own message echo — swap the optimistic bubble synchronously
+          if (raw.sender_id === currentUserId) {
+            setMessagesSync(prev => {
+              if (prev.some(m => m.id === raw.id)) return prev
               const optId = pendingOptIdRef.current
               pendingOptIdRef.current = null
               if (optId && prev.some(m => m.id === optId)) {
@@ -551,16 +697,22 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
               if (matchIdx !== -1) {
                 return prev.map((m, i) => i === matchIdx ? dbToLocal(raw) : m)
               }
-              // No opt- bubble found — message is already confirmed in state or handled by polling; skip.
               return prev
-            }
+            })
+            return
+          }
 
-            return [...prev, dbToLocal(raw)]
+          // Incoming message from another user — fetch sender profile so role styling works
+          const senderProfile = await getSenderProfile(raw.sender_id)
+          const enriched: DBChatMessage = senderProfile
+            ? { ...raw, sender: senderProfile as DBChatMessage['sender'] }
+            : raw
+          setMessagesSync(prev => {
+            if (prev.some(m => m.id === raw.id)) return prev
+            return [...prev, dbToLocal(enriched)]
           })
           // Auto-mark incoming messages as read while the chat is visible
-          if (raw.sender_id !== currentUserId) {
-            handleMarkRead().catch(() => {})
-          }
+          handleMarkRead().catch(() => {})
         },
       )
       .on(
@@ -570,8 +722,14 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
           const raw = payload.new as DBChatMessage
           // Merge the updated DB row into local state AND keep the ref in sync immediately
           // so any concurrent handleMarkRead() guard sees the latest is_read values.
+          // IMPORTANT: Preserve the existing `sender` — Realtime UPDATE payloads don't carry
+          // profile joins, so dbToLocal(raw) would incorrectly reset a staff sender to 'booster'.
           setMessages((prev) => {
-            const updated = prev.map((m) => m.id === raw.id ? { ...m, ...dbToLocal(raw) } : m)
+            const updated = prev.map((m) => {
+              if (m.id !== raw.id) return m
+              const fromDB = dbToLocal(raw)
+              return { ...m, ...fromDB, sender: m.sender }
+            })
             messagesRef.current = updated // CRITICAL: update ref synchronously
             return updated
           })
@@ -727,10 +885,10 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
       label: 'Mark Completed',
       danger: false,
     },
-    booster_mark_complete: {
-      title: 'Mark Order as Complete?',
-      description: 'This will notify the client that the order is complete. They must confirm within 3 days.',
-      label: 'Mark Complete',
+    approve_release: {
+      title: 'Approve & Release Funds?',
+      description: 'This will mark the order as completed and release payment to the booster. This cannot be undone.',
+      label: 'Approve & Release',
       danger: false,
     },
     open_dispute: {
@@ -788,41 +946,83 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
               </span>
             </div>
             <div className="flex items-center gap-2">
+              {/* Lock banner — shown instantly when Realtime fires a locking status update */}
+              {isOrderLocked && (
+                <div className="flex items-center gap-1.5 rounded-md border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-1.5">
+                  <Lock size={11} strokeWidth={1.5} className="text-[#6e6d6f]" />
+                  <span className="font-mono text-[10px] tracking-[-0.05em] text-[#6e6d6f]">Actions locked</span>
+                </div>
+              )}
+
               {isBooster ? (
-                /* Booster: Mark as Complete only — rank/status controls are in the sidebar panel */
+                /* Booster: Mark as Complete — opens proof upload modal */
                 <button
-                  onClick={() => setConfirmAction('booster_mark_complete')}
-                  className="flex h-[34px] items-center gap-1.5 rounded-md border border-green-500 bg-green-500/10 px-4 font-mono text-xs font-semibold tracking-[-0.07em] text-green-500 transition-colors hover:bg-green-500/20"
+                  onClick={() => setProofUploadOpen(true)}
+                  disabled={order.status !== 'in_progress' || isOrderLocked}
+                  title={isOrderLocked ? 'Actions restricted while order is locked.' : undefined}
+                  className="flex h-[34px] items-center gap-1.5 rounded-md border border-green-500 bg-green-500/10 px-4 font-mono text-xs font-semibold tracking-[-0.07em] text-green-500 transition-colors hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:grayscale-[0.5]"
                 >
                   <CheckCircle2 size={13} strokeWidth={2} /> Mark as Complete
                 </button>
               ) : (
-                /* Client: Mark Completed + info tooltip */
+                /* Client: action depends on order status */
                 <div className="flex items-center gap-1.5">
-                  <div className="group relative mr-3">
-                    <Info size={15} strokeWidth={1.5} className="text-gray-500 hover:text-gray-200 cursor-help transition-colors" />
-                    <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 z-50 w-[28rem] rounded-lg border border-red-500/40 bg-[#1a0a0a] p-3 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                      <p className="text-xs text-red-400 leading-relaxed">Please do not click &apos;Mark Completed&apos; until you are absolutely sure your order is done, regardless of what the booster tells you. Once payment is released to the booster, you cannot get a refund.</p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setConfirmAction('mark_completed')}
-                    className="flex h-[34px] items-center gap-1.5 rounded-md border border-green-500 bg-green-500/10 px-4 font-mono text-xs font-semibold tracking-[-0.07em] text-green-500 transition-colors hover:bg-green-500/20"
-                  >
-                    <CheckCircle2 size={13} strokeWidth={2} /> Mark Completed
-                  </button>
+                  {order.status === 'waiting_action' ? (
+                    /* Booster has marked complete — client can review proof then approve */
+                    <>
+                      {order.proof_image_url && (
+                        <a
+                          href={order.proof_image_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="View booster’s proof of completion"
+                          className="flex h-[34px] items-center gap-1.5 rounded-md border border-[#2a2a2a] bg-[#1a1a1a] px-3 font-mono text-xs tracking-[-0.07em] text-[#9ca3af] transition-colors hover:border-[#6e6d6f] hover:text-white"
+                        >
+                          <Eye size={13} strokeWidth={1.5} /> View Proof
+                        </a>
+                      )}
+                      <button
+                        onClick={() => setConfirmAction('approve_release')}
+                        className="flex h-[34px] items-center gap-1.5 rounded-md border border-green-500 bg-green-500/10 px-4 font-mono text-xs font-semibold tracking-[-0.07em] text-green-500 transition-colors hover:bg-green-500/20"
+                      >
+                        <CheckCircle2 size={13} strokeWidth={2} /> Approve &amp; Release Funds
+                      </button>
+                    </>
+                  ) : (order.status === 'in_progress' || isOrderLocked) ? (
+                    /* In-progress (or locked): manual complete — tooltip only when active */
+                    <>
+                      {order.status === 'in_progress' && (
+                        <div className="group relative mr-3">
+                          <Info size={15} strokeWidth={1.5} className="text-gray-500 hover:text-gray-200 cursor-help transition-colors" />
+                          <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 z-50 w-[28rem] rounded-lg border border-red-500/40 bg-[#1a0a0a] p-3 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                            <p className="text-xs text-red-400 leading-relaxed">Please do not click &apos;Mark Completed&apos; until you are absolutely sure your order is done, regardless of what the booster tells you. Once payment is released to the booster, you cannot get a refund.</p>
+                          </div>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => setConfirmAction('mark_completed')}
+                        disabled={isOrderLocked}
+                        title={isOrderLocked ? 'Actions restricted while order is locked.' : undefined}
+                        className="flex h-[34px] items-center gap-1.5 rounded-md border border-green-500 bg-green-500/10 px-4 font-mono text-xs font-semibold tracking-[-0.07em] text-green-500 transition-colors hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:grayscale-[0.5]"
+                      >
+                        <CheckCircle2 size={13} strokeWidth={2} /> Mark Completed
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               )}
 
-              {/* Kebab menu */}
+              {/* Kebab menu — trigger disabled (and dropdown suppressed) when order is locked */}
               <div ref={kebabRef} className="relative">
                 <button
-                  onClick={() => setKebabOpen((v) => !v)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-[#2a2a2a] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white"
+                  onClick={() => !isOrderLocked && setKebabOpen((v) => !v)}
+                  disabled={isOrderLocked}
+                  title={isOrderLocked ? 'Actions restricted while order is locked.' : undefined}
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-[#2a2a2a] text-[#6e6d6f] transition-colors hover:border-[#6e6d6f] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <MoreVertical size={15} strokeWidth={1.5} />
                 </button>
-                {kebabOpen && (
+                {kebabOpen && !isOrderLocked && (
                   <div className="absolute right-0 top-[calc(100%+6px)] z-50 min-w-[200px] overflow-hidden rounded-xl border border-white/10 bg-[#111] py-1.5 shadow-2xl">
                     {([
                       { action: 'open_dispute'   as ConfirmAction, label: 'Open Dispute',   icon: <AlertTriangle size={13} strokeWidth={1.5} className="text-orange-400" /> },
@@ -852,15 +1052,26 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
                   return <SystemMessageDivider key={msg.id} text={msg.text ?? ''} colorCls={colorCls} />
                 }
                 const isClient = msg.sender === 'client'
+                const isStaff  = (STAFF_ROLES as readonly string[]).includes(msg.sender)
                 // isOwn: the current viewer sent this message
                 const isOwn = isBooster ? msg.sender === 'booster' : isClient
                 // Label shown above incoming messages
-                const incomingLabel = isBooster ? 'Client' : 'Booster'
+                const staffLabel = msg.sender === 'admin' ? '[SYSTEM ADMINISTRATOR]'
+                  : msg.sender === 'support' ? '[SUPPORT]'
+                  : msg.sender === 'accountant' ? '[ACCOUNTANT]'
+                  : null
+                const incomingLabel = staffLabel ?? (isBooster ? 'Client' : 'Booster')
                 return (
                   <div key={msg.id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[70%]`}>
-                      {!isOwn && (
-                        <p className="mb-1 font-mono text-[10px] tracking-[-0.05em] text-[#4a4a4a]">{incomingLabel}</p>
+                      {(!isOwn || (isOwn && isStaff)) && (
+                        <p className={`mb-1 font-mono text-[10px] tracking-[-0.05em] ${
+                          isStaff
+                            ? msg.sender === 'admin'
+                              ? 'text-red-400 font-semibold'
+                              : 'text-yellow-400 font-semibold'
+                            : 'text-[#4a4a4a]'
+                        }`}>{isOwn && isStaff ? `${staffLabel} You` : incomingLabel}</p>
                       )}
                       {msg.imageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -873,10 +1084,28 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
                         />
                       ) : (
                         <div className={`rounded-md px-3.5 py-2.5 font-mono text-xs tracking-[-0.05em] leading-relaxed ${
-                          isOwn
-                            ? 'bg-[#e8e8e8] text-[#111111] rounded-br-none'
-                            : 'border border-[#2a2a2a] bg-[#141414] text-[#d0d0d0] rounded-bl-none'
+                          isStaff
+                            ? msg.sender === 'admin'
+                              ? isOwn
+                                ? 'bg-red-500/10 border border-red-500/40 text-red-100 shadow-[0_0_12px_rgba(239,68,68,0.15)] rounded-br-none'
+                                : 'bg-red-500/5 border border-red-500/30 text-red-200 shadow-[0_0_8px_rgba(239,68,68,0.1)] rounded-bl-none'
+                              : isOwn
+                                ? 'bg-yellow-500/10 border border-yellow-500/40 text-yellow-100 shadow-[0_0_12px_rgba(234,179,8,0.15)] rounded-br-none'
+                                : 'bg-yellow-500/5 border border-yellow-500/30 text-yellow-200 shadow-[0_0_8px_rgba(234,179,8,0.1)] rounded-bl-none'
+                            : isOwn
+                              ? 'bg-[#e8e8e8] text-[#111111] rounded-br-none'
+                              : 'border border-[#2a2a2a] bg-[#141414] text-[#d0d0d0] rounded-bl-none'
                         }`}>
+                          {isStaff && (
+                            <div className={`flex items-center gap-1 mb-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <Shield size={9} strokeWidth={2} className={msg.sender === 'admin' ? 'text-red-400' : 'text-yellow-400'} />
+                              <span className={`font-mono text-[8px] tracking-[0.02em] font-semibold uppercase ${
+                                msg.sender === 'admin' ? 'text-red-400' : 'text-yellow-400'
+                              }`}>
+                                {msg.sender}
+                              </span>
+                            </div>
+                          )}
                           {msg.text}
                         </div>
                       )}
@@ -1032,14 +1261,40 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
                   </span>
                 </div>
 
-                {/* Short progress track */}
+                {/* Stepped rank progress nodes */}
                 {(() => {
                   const progressRanks = ranksInRange(d.startFull, d.endFull)
                   const progressIdx = progressRanks.findIndex((r) => r.label === liveStatus.currentRankLabel)
-                  const progressPct = progressRanks.length <= 1 ? 0 : Math.round((Math.max(0, progressIdx) / (progressRanks.length - 1)) * 100)
+                  // Cap to 9 nodes max; sample evenly, always keeping first + last
+                  const MAX_NODES = 9
+                  let nodes = progressRanks
+                  if (progressRanks.length > MAX_NODES) {
+                    const step = (progressRanks.length - 1) / (MAX_NODES - 1)
+                    nodes = Array.from({ length: MAX_NODES }, (_, i) =>
+                      progressRanks[Math.round(i * step)]
+                    )
+                  }
                   return (
-                    <div className="w-20 mx-3 h-[3px] bg-white/10 rounded-full relative overflow-hidden shrink-0">
-                      <div className="absolute left-0 top-0 h-full bg-green-500 rounded-full transition-all duration-500" style={{ width: `${progressPct}%` }} />
+                    <div className="flex items-center gap-1 mx-3 shrink-0">
+                      {nodes.map((rank) => {
+                        const origIdx = progressRanks.findIndex((r) => r.label === rank.label)
+                        const isDone    = origIdx <= progressIdx
+                        const isCurrent = rank.label === liveStatus.currentRankLabel
+                        return (
+                          <div
+                            key={rank.label}
+                            title={rank.label}
+                            className={[
+                              'rounded-full transition-all duration-500 shrink-0',
+                              isCurrent
+                                ? 'h-3 w-3 ring-2 ring-green-400/60 bg-green-500'
+                                : isDone
+                                  ? 'h-2 w-2 bg-green-500'
+                                  : 'h-2 w-2 bg-white/15',
+                            ].join(' ')}
+                          />
+                        )
+                      })}
                     </div>
                   )
                 })()}
@@ -1128,7 +1383,7 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 {[
                   { label: 'Game',    value: d.gameName },
-                  { label: 'Price',   value: `$${d.price.toFixed(2)}` },
+                  { label: isBooster ? 'Your Earnings' : 'Price', value: `$${isBooster ? calculateBoosterPayout(d.price).boosterPayout.toFixed(2) : d.price.toFixed(2)}` },
                   { label: 'Server',  value: d.server },
                   { label: 'Date',    value: d.createdDate },
                   ...(d.startRR  ? [{ label: 'Start RR',  value: `${d.startRR} RR`  }] : []),
@@ -1217,6 +1472,19 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
         </div>
       )}
 
+      {proofUploadOpen && (
+        <ProofUploadModal
+          orderId={order.id}
+          onCancel={() => setProofUploadOpen(false)}
+          onSuccess={() => setProofUploadOpen(false)}
+          onActivityReset={() => {
+            setActivitySelect('Waiting Action')
+            updateOrderActivity(order.id, 'Waiting Action').catch(console.error)
+            onActivityUpdate('Waiting' as BoosterStatus)
+          }}
+        />
+      )}
+
       {/* Confirmation Modal */}
       {confirmAction && (
         <ConfirmModal
@@ -1224,19 +1492,26 @@ function ChatView({ order, d, gameIcon, onBack, liveStatus, onRankUpdate, onActi
           description={CONFIRM_META[confirmAction].description}
           confirmLabel={CONFIRM_META[confirmAction].label}
           danger={CONFIRM_META[confirmAction].danger}
-          onCancel={() => setConfirmAction(null)}
-          onConfirm={() => {
+          isLoading={isActionPending}
+          onCancel={() => { if (!isActionPending) setConfirmAction(null) }}
+          onConfirm={async () => {
             const action = confirmAction!
             const actorRole: 'Client' | 'Booster' = isBooster ? 'Booster' : 'Client'
-            setConfirmAction(null)
-            // Server action updates order status + inserts system message.
-            // Realtime delivers it to both parties — no optimistic local state needed.
-            executeOrderAction(order.id, action, actorRole).catch(console.error)
-            // Auto-reset booster activity after marking complete
-            if (action === 'booster_mark_complete') {
-              setActivitySelect('Waiting Action')
-              updateOrderActivity(order.id, 'Waiting Action').catch(console.error)
-              onActivityUpdate('Waiting' as BoosterStatus)
+            setIsActionPending(true)
+            try {
+              if (action === 'approve_release') {
+                const result = await approveAndReleaseAction(order.id)
+                if (result?.error) throw new Error(result.error)
+              } else {
+                const result = await executeOrderAction(order.id, action, actorRole)
+                if (result?.error) throw new Error(result.error)
+              }
+              setConfirmAction(null)
+            } catch (err) {
+              console.error('[OrderAction] failed:', err)
+              // Keep modal open on error so the user can retry or cancel
+            } finally {
+              setIsActionPending(false)
             }
           }}
         />
@@ -1411,22 +1686,23 @@ export function OrderDetailView({ order, messages = [], userId = '', defaultChat
           console.log('[Realtime] orders UPDATE received — booster_id:', raw.booster_id, '| status:', raw.status)
           // Immediately merge flat columns into liveOrder
           setLiveOrder(prev => {
-            const statusChanged    = raw.status     !== prev.status
-            const boosterChanged   = raw.booster_id !== prev.booster_id
-            // For detail-only updates (activity/progress), skip router.refresh() to avoid loop.
-            // Only refresh when relationship-level data changes (booster assigned / status flip).
-            if ((statusChanged || boosterChanged) && !boosterHydratedRef.current) {
-              boosterHydratedRef.current = true
-              router.refresh()
-            } else if (statusChanged || boosterChanged) {
-              router.refresh()
+            const statusChanged  = raw.status     !== prev.status
+            const boosterChanged = raw.booster_id !== prev.booster_id
+            if (statusChanged || boosterChanged) {
+              // Schedule the refresh outside the updater to avoid calling router.refresh()
+              // during a React render (which causes the "setState during render" warning).
+              if (!boosterHydratedRef.current) {
+                boosterHydratedRef.current = true
+              }
+              setTimeout(() => router.refresh(), 0)
             }
             return {
               ...prev,
-              status:     (raw.status     as Order['status'])  ?? prev.status,
-              booster_id: (raw.booster_id as string | null)    ?? prev.booster_id,
-              details:    (raw.details    as Order['details']) ?? prev.details,
-              updated_at: (raw.updated_at as string)           ?? prev.updated_at,
+              status:          (raw.status          as Order['status'])  ?? prev.status,
+              booster_id:      (raw.booster_id      as string | null)    ?? prev.booster_id,
+              details:         (raw.details         as Order['details']) ?? prev.details,
+              updated_at:      (raw.updated_at      as string)           ?? prev.updated_at,
+              proof_image_url: (raw.proof_image_url as string | null)    ?? prev.proof_image_url,
               booster: raw.booster_id ? (prev.booster ?? null) : null,
             }
           })
@@ -1469,7 +1745,7 @@ export function OrderDetailView({ order, messages = [], userId = '', defaultChat
                     <span className="text-[#2a2a2a]">·</span>
                     <span>{d.server}</span>
                     <span className="text-[#2a2a2a]">·</span>
-                    <span className="font-semibold text-white">${d.price.toFixed(2)}</span>
+                    <span className="font-semibold text-white">${isBooster ? calculateBoosterPayout(d.price).boosterPayout.toFixed(2) : d.price.toFixed(2)}</span>
                   </div>
                 </div>
               </div>
@@ -1575,7 +1851,7 @@ export function OrderDetailView({ order, messages = [], userId = '', defaultChat
 
                     <div className="col-span-3 border-t border-[#2a2a2a] pt-5">
                       <div className="grid grid-cols-3 gap-x-6 gap-y-6">
-                        <DataField label="Price">${d.price.toFixed(2)}</DataField>
+                        <DataField label={isBooster ? 'Your Earnings' : 'Price'}>${isBooster ? calculateBoosterPayout(d.price).boosterPayout.toFixed(2) : d.price.toFixed(2)}</DataField>
                         {d.queue && <DataField label="Queue">{d.queue}</DataField>}
                         {d.extras.length > 0 && (
                           <div className="flex flex-col gap-1.5">

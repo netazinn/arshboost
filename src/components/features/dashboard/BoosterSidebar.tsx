@@ -11,6 +11,7 @@ import {
   Wallet,
   Medal,
   Settings,
+  ShieldCheck,
   LogOut,
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -44,7 +45,9 @@ const NAV_GROUPS: {
   {
     label: 'ACCOUNT',
     items: [
-      { href: '/dashboard/settings', label: 'Settings', icon: Settings },
+      { href: '/dashboard/settings',      label: 'Settings',     icon: Settings    },
+      { href: '/dashboard/verification',    label: 'Verification', icon: ShieldCheck },
+
     ],
   },
 ]
@@ -130,10 +133,13 @@ export function BoosterSidebar() {
           </div>
 
           {/* Log out button */}
-          <Button size="icon" variant="ghost" className="shrink-0 text-muted-foreground hover:text-foreground" asChild>
-            <Link href="/auth/login">
-              <LogOut size={15} strokeWidth={1.5} />
-            </Link>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => { window.location.href = '/auth/signout' }}
+          >
+            <LogOut size={15} strokeWidth={1.5} />
           </Button>
         </div>
       </div>

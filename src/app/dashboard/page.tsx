@@ -6,9 +6,9 @@ import { BoosterDashboard } from '@/components/features/dashboard/BoosterDashboa
 
 const ROLE_HOME: Record<string, string> = {
   client:      '/dashboard/orders',
-  support:     '/dashboard/radar',
-  admin:       '/dashboard/radar',
-  accountant:  '/dashboard/withdrawals',
+  support:     '/admin',
+  admin:       '/admin',
+  accountant:  '/admin/withdrawals',
 }
 
 export default async function DashboardPage() {

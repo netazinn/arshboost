@@ -353,7 +353,7 @@ export function ChatInboxLayout({
     : null
 
   const sidebarTitle    = role === 'booster' ? 'Chat Inbox' : 'Orders Chat'
-  const sidebarSubtitle = role === 'booster' ? 'Staff channels & order chats' : 'All your order conversations'
+  const sidebarSubtitle = role === 'booster' ? 'Your active order conversations' : 'All your order conversations'
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden rounded-md border border-[#2a2a2a]">
@@ -368,56 +368,6 @@ export function ChatInboxLayout({
         </div>
 
         <div className="flex-1 overflow-y-auto">
-
-          {/* Booster: Pinned staff DM channels */}
-          {role === 'booster' && (
-            <>
-              <div className="px-4 pt-3 pb-1">
-                <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-[#3a3a3a]">Staff Channels</span>
-              </div>
-              {DM_CHANNELS.map((ch) => {
-                const isActive = selection?.kind === 'dm' && selection.channelId === ch.id
-                const last     = lastDmMsgs[ch.id]
-                return (
-                  <button
-                    key={ch.id}
-                    onClick={() => setSelection({ kind: 'dm', channelId: ch.id })}
-                    className={`relative w-full flex items-start gap-3 px-4 py-3 border-b border-[#0f0f0f] text-left transition-colors ${
-                      isActive ? `${ch.activeBg} border-l-[3px] ${ch.borderAccent}` : 'hover:bg-white/[0.02]'
-                    }`}
-                  >
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#2a2a2a] bg-[#111]">
-                      <ch.Icon size={14} strokeWidth={1.5} className={ch.iconColor} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className={`font-mono text-[11px] font-semibold tracking-[-0.05em] ${isActive ? 'text-white' : 'text-[#c8c8c8]'}`}>
-                          {ch.label}
-                        </span>
-                        {last && (
-                          <span className="font-mono text-[9px] tracking-[-0.03em] text-[#4a4a4a] shrink-0">
-                            {relativeTime(last.created_at)}
-                          </span>
-                        )}
-                      </div>
-                      <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a] truncate mt-0.5">
-                        {last
-                          ? last.sender_id === userId ? `You: ${last.content}` : last.content
-                          : `Message ${ch.label}…`
-                        }
-                      </p>
-                    </div>
-                  </button>
-                )
-              })}
-              <div className="px-4 pt-3 pb-1">
-                <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-[#3a3a3a]">
-                  Order Chats
-                  <span className="ml-1.5 text-[#2a2a2a]">({orders.length})</span>
-                </span>
-              </div>
-            </>
-          )}
 
           {/* Orders list */}
           {orders.length === 0 ? (
@@ -449,42 +399,13 @@ export function ChatInboxLayout({
                 <MessageSquare size={20} strokeWidth={1.5} className="text-[#3a3a3a]" />
               </div>
               <p className="font-mono text-sm font-semibold tracking-[-0.07em] text-white">
-                {role === 'booster' ? 'Select a channel or order' : 'Select an order'}
+                Select an order
               </p>
               <p className="font-mono text-[11px] tracking-[-0.05em] text-[#4a4a4a] max-w-[200px] leading-relaxed">
-                {role === 'booster'
-                  ? 'Open a staff channel or click any order chat from the sidebar.'
-                  : 'Click an order from the sidebar to open its chat.'
-                }
+                Click an order from the sidebar to open its chat.
               </p>
             </div>
           </div>
-        )}
-
-        {/* DM channel selected */}
-        {selection?.kind === 'dm' && activeChannel && (
-          <>
-            {/* DM Header */}
-            <div className="shrink-0 flex items-center gap-3 border-b border-[#1a1a1a] px-5 py-3.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#2a2a2a] bg-[#111111]">
-                <activeChannel.Icon size={14} strokeWidth={1.5} className={activeChannel.iconColor} />
-              </div>
-              <div>
-                <p className="font-mono text-[12px] font-semibold tracking-[-0.06em] text-white">{activeChannel.label}</p>
-                <p className="font-mono text-[10px] tracking-[-0.04em] text-[#4a4a4a]">{activeChannel.role}</p>
-              </div>
-              <div className={`ml-auto flex items-center gap-1.5 rounded border px-2 py-0.5 ${activeChannel.pillCls}`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${activeChannel.dotColor} opacity-80`} />
-                <span className="font-mono text-[9px] tracking-[-0.03em]">secure channel</span>
-              </div>
-            </div>
-            <DmChatPane
-              userId={userId}
-              channelDef={activeChannel}
-              lastMessages={lastDmMsgs}
-              onLastMessageUpdate={handleDmUpdate}
-            />
-          </>
         )}
 
         {/* Order chat selected */}

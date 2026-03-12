@@ -25,7 +25,7 @@ export async function Navbar() {
 
         {/* Right actions */}
         <nav className="flex items-center gap-3" aria-label="Main navigation">
-          {profile ? (
+          {profile && user ? (
             <UserMenu profile={{ id: user.id, email: profile.email, username: profile.username, avatar_url: profile.avatar_url, role: profile.role }} />
           ) : (
             <Link

@@ -4,8 +4,8 @@ import type { Database } from '@/types/database'
 
 const ROLE_HOME: Record<string, string> = {
   booster: '/dashboard',
-  support: '/dashboard/support',
-  admin:   '/dashboard/support',
+  support: '/admin',
+  accountant: '/admin/withdrawals',
 }
 
 export async function proxy(request: NextRequest) {

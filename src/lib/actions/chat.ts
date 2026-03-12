@@ -2,7 +2,10 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import type { ChatMessage } from '@/types'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
+import type { ChatMessage, Profile } from '@/types'
+import { scanAndSanitize } from '@/lib/utils/anomaly-detection'
+import { flagUser } from '@/lib/actions/flags'
 
 export async function sendMessage(orderId: string, content: string) {
   if (!content.trim()) return { error: 'Message cannot be empty' }
@@ -14,9 +17,15 @@ export async function sendMessage(orderId: string, content: string) {
 
   if (!user) return { error: 'Not authenticated' }
 
+  // ── DLP: scan and sanitize before persisting ──────────────────────────────
+  const { clean, violations } = scanAndSanitize(content.trim())
+  if (violations.length > 0) {
+    flagUser(user.id, 'DLP_VIOLATION', `Order chat ${orderId}: ${violations.join(', ')}`).catch(console.error)
+  }
+
   const { error } = await supabase
     .from('chat_messages')
-    .insert({ order_id: orderId, sender_id: user.id, content: content.trim() })
+    .insert({ order_id: orderId, sender_id: user.id, content: clean })
 
   if (error) return { error: error.message }
 
@@ -29,13 +38,46 @@ export async function sendMessage(orderId: string, content: string) {
 
 /** Polling fallback: returns all messages for an order, newest first. */
 export async function fetchMessages(orderId: string): Promise<ChatMessage[]> {
+  // Verify the caller is authenticated before using service-role to fetch.
   const supabase = await createClient()
-  const { data } = await supabase
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  // Use service-role so the sender:profiles join always returns role data
+  // even when the caller is a client/booster who can't read staff profiles.
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+  const { data } = await admin
     .from('chat_messages')
     .select('*, sender:profiles(id, email, username, avatar_url, role)')
     .eq('order_id', orderId)
     .order('created_at', { ascending: true })
   return (data ?? []) as ChatMessage[]
+}
+
+/**
+ * Returns basic profile data (id, username, role, avatar_url) for a given user id.
+ * Uses service-role so callers (client/booster) can resolve staff sender roles
+ * from Realtime INSERT payloads without hitting the profiles RLS restriction.
+ * Caller must be authenticated.
+ */
+export async function getSenderProfile(senderId: string): Promise<Pick<Profile, 'id' | 'username' | 'email' | 'role' | 'avatar_url'> | null> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+  const { data } = await admin
+    .from('profiles')
+    .select('id, username, email, role, avatar_url')
+    .eq('id', senderId)
+    .single()
+  return data ?? null
 }
 
 /**
@@ -101,12 +143,18 @@ export async function sendDmMessage(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Not authenticated' }
 
+  // ── DLP: scan and sanitize before persisting ──────────────────────────────
+  const { clean, violations } = scanAndSanitize(content.trim())
+  if (violations.length > 0) {
+    flagUser(user.id, 'DLP_VIOLATION', `DM thread ${threadId}: ${violations.join(', ')}`).catch(console.error)
+  }
+
   const { error } = await supabase
     .from('chat_messages')
     .insert({
       dm_thread_id: threadId,
       sender_id:    user.id,
-      content:      content.trim(),
+      content:      clean,
     })
 
   if (error) return { error: error.message }

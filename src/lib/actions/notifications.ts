@@ -63,6 +63,17 @@ export async function markAllNotificationsRead(): Promise<void> {
     .eq('read', false)
 }
 
+export async function clearAllNotifications(): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return
+
+  await supabase
+    .from('notifications')
+    .delete()
+    .eq('user_id', user.id)
+}
+
 // ─── Create — service role only ──────────────────────────────────────────────
 // Not exported as a client-callable action; called internally from
 // executeOrderAction (which already has the admin client and actor info).
