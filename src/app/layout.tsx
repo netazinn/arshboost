@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Roboto, Roboto_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 import { JsonLd, buildWebSiteSchema, buildOrganizationSchema } from "@/components/shared/JsonLd";
 import { ThemeProvider } from "@/components/shared/ThemeProvider";
@@ -90,6 +91,7 @@ export default async function RootLayout({
           </ThemeProvider>
         )}
         <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );
